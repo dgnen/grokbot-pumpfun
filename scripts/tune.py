@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""Подбор весов и порога по собственному логу.
+"""Pick weights and a threshold from your own log.
 
-Каждая запись лога хранит скоринг, разложенный по компонентам, поэтому
-итог можно пересчитать с другими весами, не вызывая агентов заново. Скрипт
-отвечает на два вопроса:
+Each log record stores scoring broken down by component, so the
+total can be recomputed with different weights without calling the agents
+again. The script answers two questions:
 
-  * как порог меняет число кандидатов и результат по закрытым сделкам;
-  * какие веса дали бы лучший результат на том же материале.
+  * how the threshold changes the number of candidates and the result on closed trades;
+  * which weights would have given a better result on the same material.
 
     python scripts/tune.py logs/trades.jsonl
     python scripts/tune.py logs/trades.jsonl --fine --top 20
 
-ЧЕСТНАЯ ОГОВОРКА, которую стоит прочитать до того, как менять конфиг.
-Результат считается только по сделкам, которые реально были совершены и
-закрыты: чем кончился бы токен, отсеянный порогом, лог не знает и знать не
-может. Поэтому таблица показывает, что порог **сохраняет или теряет** из
-уже известного, а не «сколько бы вы заработали». Веса, подобранные по
-двум десяткам сделок, — это подгонка под шум, а не настройка.
+HONEST CAVEAT, worth reading before you change the config.
+The result is counted only on trades that were actually taken and
+closed: what would have happened to a token filtered by the threshold, the log does not
+know and cannot know. So the table shows what the threshold **keeps or loses** from
+what is already known, not "how much you would have made". Weights fitted on
+a couple dozen trades are fitting noise, not tuning.
 """
 
 from __future__ import annotations
@@ -35,17 +35,17 @@ from src.models import Config
 COMPONENTS = ("audit", "narrative", "timing", "metrics")
 THRESHOLDS = (0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85)
 
-# Ниже этого числа закрытых сделок любые выводы — совпадение.
+# Below this number of closed trades any conclusions are coincidence.
 MEANINGFUL_SAMPLE = 30
 
 
 class Candidate(NamedTuple):
-    """Токен, доживший до скоринга, и то, чем он кончился."""
+    """A token that reached scoring, and how it ended."""
 
     mint: str
     parts: tuple[float, float, float, float]
     bought: bool
-    pnl_sol: float | None          # None — позиция не закрывалась
+    pnl_sol: float | None          # None — the position was never closed
 
 
 def load_candidates(path: str, rotated: bool) -> list[Candidate]:
@@ -78,7 +78,7 @@ def load_candidates(path: str, rotated: bool) -> list[Candidate]:
 
 
 def prompt_versions_in(path: str, rotated: bool) -> set[str]:
-    """Наборы версий промптов, встреченные в логе покупок."""
+    """Sets of prompt versions seen in buy records in the log."""
     source = TradeLog(path).read_all() if rotated else read_log(path)
     found: set[str] = set()
     for record in source:
@@ -103,7 +103,7 @@ class Outcome(NamedTuple):
 
     @property
     def score(self) -> float:
-        """Чем выше, тем лучше набор: сохранённая прибыль минус упущенная."""
+        """Higher is better: kept profit minus missed profit."""
         return self.kept_pnl - max(0.0, self.lost_pnl)
 
 
@@ -125,18 +125,18 @@ def evaluate(
 
 
 def rank(row: tuple[Outcome, tuple[float, ...], float]) -> tuple[float, int, float]:
-    """Ключ сортировки наборов.
+    """Sort key for weight sets.
 
-    При равном результате предпочитаем тот, что оставил больше сделок и
-    меньше опирается на один компонент: вес 1.00 на одной оценке — это
-    почти всегда подгонка, а не находка.
+    On a tie, prefer the one that kept more trades and
+    leans less on a single component: a 1.00 weight on one score is
+    almost always overfitting, not a finding.
     """
     outcome, weights, _ = row
     return (outcome.score, outcome.kept_trades, -max(weights))
 
 
 def simplex(step: float) -> list[tuple[float, ...]]:
-    """Все наборы из четырёх весов с данным шагом, дающие в сумме единицу."""
+    """All four-weight sets with the given step that sum to one."""
     steps = round(1.0 / step)
     grid: list[tuple[float, ...]] = []
     for a, b, c in itertools.product(range(steps + 1), repeat=3):
@@ -163,73 +163,73 @@ def fmt_weights(weights: tuple[float, ...]) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Подбор весов и порога по логу")
+    parser = argparse.ArgumentParser(description="Pick weights and a threshold from the log")
     parser.add_argument("log", nargs="?", default="logs/trades.jsonl")
-    parser.add_argument("--config", default="config.yaml", help="откуда взять текущие веса")
-    parser.add_argument("--rotated", action="store_true", help="считать и повёрнутые копии")
-    parser.add_argument("--fine", action="store_true", help="шаг сетки 0.05 вместо 0.10")
-    parser.add_argument("--top", type=int, default=10, help="сколько наборов показать")
+    parser.add_argument("--config", default="config.yaml", help="where to take current weights from")
+    parser.add_argument("--rotated", action="store_true", help="include rotated copies")
+    parser.add_argument("--fine", action="store_true", help="grid step 0.05 instead of 0.10")
+    parser.add_argument("--top", type=int, default=10, help="how many sets to show")
     args = parser.parse_args()
 
     candidates = load_candidates(args.log, args.rotated)
     if not candidates:
-        print(f"В {args.log} нет записей со скорингом — подбирать не на чем.")
+        print(f"No scoring records in {args.log} — nothing to tune on.")
         return 1
 
     versions = prompt_versions_in(args.log, args.rotated)
     if len(versions) > 1:
-        print("\n  ОСТОРОЖНО: в логе решения, принятые с разными версиями промптов:")
+        print("\n  CAUTION: the log has decisions made with different prompt versions:")
         for version in sorted(versions):
             print(f"    {version}")
-        print("  Это записи разных ботов. Веса, подобранные на такой смеси,")
-        print("  не относятся ни к одному из них.")
+        print("  These are records from different bots. Weights fitted on that mix")
+        print("  do not belong to any of them.")
 
     closed = [c for c in candidates if c.pnl_sol is not None]
     weights = current_weights(args.config)
 
     print()
     print("=" * 68)
-    print(f"  ПОДБОР ПО ЛОГУ  {args.log}")
-    print(f"  кандидатов со скорингом: {len(candidates)}   "
-          f"закрытых сделок: {len(closed)}")
-    print(f"  текущие веса: {fmt_weights(weights)}")
+    print(f"  TUNE FROM LOG  {args.log}")
+    print(f"  candidates with scoring: {len(candidates)}   "
+          f"closed trades: {len(closed)}")
+    print(f"  current weights: {fmt_weights(weights)}")
     print("=" * 68)
 
     if len(closed) < MEANINGFUL_SAMPLE:
-        print(f"\n  ОСТОРОЖНО: закрытых сделок {len(closed)}, это меньше "
-              f"{MEANINGFUL_SAMPLE}.\n  Любой подбор на таком материале — подгонка "
-              "под шум. Смотрите\n  на таблицу как на описание того, что уже "
-              "случилось, и не более.")
+        print(f"\n  CAUTION: {len(closed)} closed trades, that is fewer than "
+              f"{MEANINGFUL_SAMPLE}.\n  Any fit on that material is fitting "
+              "noise. Treat\n  the table as a description of what already "
+              "happened, and nothing more.")
 
-    # -- порог при текущих весах ------------------------------------------
-    print("\nПорог при текущих весах")
-    print(f"  {'порог':>6}  {'кандидатов':>10}  {'сделок':>7}  {'их PnL':>10}  "
-          f"{'отсеяно':>8}  {'их PnL':>10}")
+    # -- threshold at current weights --------------------------------------
+    print("\nThreshold at current weights")
+    print(f"  {'thresh':>6}  {'candidates':>10}  {'trades':>7}  {'their PnL':>10}  "
+          f"{'cut':>8}  {'their PnL':>10}")
     for threshold in THRESHOLDS:
         outcome = evaluate(candidates, weights, threshold)
         print(f"  {threshold:>6.2f}  {outcome.passed:>10}  {outcome.kept_trades:>7}  "
               f"{outcome.kept_pnl:>+10.4f}  {outcome.lost_trades:>8}  "
               f"{outcome.lost_pnl:>+10.4f}")
-    print("\n  «отсеяно» — сделки, которые этот порог НЕ пропустил бы;")
-    print("  их PnL со знаком минус означает, что порог спас бы эти деньги.")
+    print("\n  \"cut\" — trades this threshold would NOT have let through;")
+    print("  a negative PnL for them means the threshold would have saved that money.")
 
     if not closed:
-        print("\nЗакрытых сделок нет — сравнивать наборы весов не на чем.")
+        print("\nNo closed trades — nothing to compare weight sets on.")
         return 0
 
-    # -- сетка весов -------------------------------------------------------
+    # -- weight grid -------------------------------------------------------
     step = 0.05 if args.fine else 0.10
     grid = simplex(step)
-    print(f"\nПеребор весов: {len(grid)} наборов × {len(THRESHOLDS)} порогов")
+    print(f"\nWeight search: {len(grid)} sets × {len(THRESHOLDS)} thresholds")
 
-    # Для каждого набора весов оставляем только лучший порог: иначе верх
-    # таблицы занимает один и тот же набор, размноженный по всей шкале.
+    # For each weight set keep only the best threshold: otherwise the top
+    # of the table is the same set, cloned across the whole scale.
     best_by_weights: dict[tuple[float, ...], tuple[Outcome, tuple[float, ...], float]] = {}
     for candidate_weights in grid:
         for threshold in THRESHOLDS:
             outcome = evaluate(candidates, candidate_weights, threshold)
             if outcome.kept_trades == 0:
-                continue          # набор, не оставляющий ни одной сделки, бесполезен
+                continue          # a set that keeps no trades is useless
             row = (outcome, candidate_weights, threshold)
             current = best_by_weights.get(candidate_weights)
             if current is None or rank(row) > rank(current):
@@ -238,16 +238,16 @@ def main() -> int:
     results = sorted(best_by_weights.values(), key=rank, reverse=True)
     base = evaluate(candidates, weights, 0.65)
 
-    print(f"\nЛучшие {args.top} по «сохранённая прибыль минус упущенная»")
-    print(f"  {'#':>2}  {'веса':<38} {'порог':>5}  {'сделок':>6}  {'PnL':>10}")
+    print(f"\nTop {args.top} by \"kept profit minus missed\"")
+    print(f"  {'#':>2}  {'weights':<38} {'thresh':>5}  {'trades':>6}  {'PnL':>10}")
     for index, (outcome, candidate_weights, threshold) in enumerate(results[:args.top], 1):
         print(f"  {index:>2}  {fmt_weights(candidate_weights):<38} {threshold:>5.2f}  "
               f"{outcome.kept_trades:>6}  {outcome.kept_pnl:>+10.4f}")
 
-    print(f"\n  для сравнения, текущие веса при пороге 0.65: "
-          f"{base.kept_trades} сделок, PnL {base.kept_pnl:+.4f}")
-    print("\n  Ещё раз: чем кончились бы отсеянные токены, лог не знает.")
-    print("  Эта таблица — про уже случившееся, а не про будущий доход.\n")
+    print(f"\n  for comparison, current weights at threshold 0.65: "
+          f"{base.kept_trades} trades, PnL {base.kept_pnl:+.4f}")
+    print("\n  Again: what filtered tokens would have done, the log does not know.")
+    print("  This table is about what already happened, not about future income.\n")
     return 0
 
 
