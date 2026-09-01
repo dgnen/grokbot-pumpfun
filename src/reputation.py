@@ -1,13 +1,15 @@
-"""Память о создателях токенов.
+"""Memory of token creators.
 
-Пайплайн разбирает каждый лонч с чистого листа, поэтому один и тот же
-деплойер может слить нас трижды подряд — и каждый раз он будет «новым».
-Аудитор его тоже не узнает: он видит один токен, а не историю адреса.
+The pipeline reviews every launch from a clean slate, so the same
+deployer can rug us three times in a row — and each time they will be
+"new". The auditor will not recognize them either: it sees one token,
+not the address history.
 
-Книга репутации закрывает это дёшево и без LLM: адрес, чей токен уже
-закрылся глубоким минусом, отсекается на входе, до единого запроса к
-Grok. Решение принимается только по собственным закрытым сделкам — это не
-чёрный список из интернета и не эвристика, а факт из своего же лога.
+The reputation book closes this cheaply and without an LLM: an address
+whose token already closed deep in the red is cut at the door, before
+a single Grok call. The decision is made only from our own closed
+trades — not an internet blacklist and not a heuristic, a fact from
+our own log.
 """
 
 from __future__ import annotations
@@ -24,12 +26,12 @@ from pydantic import BaseModel, Field
 
 log = logging.getLogger(__name__)
 
-# Сколько адресов помним. Дальше вытесняем самые старые.
+# How many addresses we remember. After that the oldest are evicted.
 MAX_CREATORS = 50_000
 
 
 class CreatorRecord(BaseModel):
-    """Что мы знаем об адресе по своим же сделкам."""
+    """What we know about an address from our own trades."""
 
     creator: str
     tokens_seen: int = 0
@@ -46,13 +48,13 @@ class CreatorRecord(BaseModel):
 
 
 class ReputationBook(BaseModel):
-    """Файл с историей адресов. Читается на старте, пишется после закрытий."""
+    """File of address history. Read on start, written after closes."""
 
     version: int = 1
     creators: dict[str, CreatorRecord] = Field(default_factory=dict)
     updated_at: float = 0.0
 
-    # -- диск --------------------------------------------------------------
+    # -- disk --------------------------------------------------------------
 
     @classmethod
     def load(cls, path: str | Path) -> ReputationBook:
@@ -63,11 +65,11 @@ class ReputationBook(BaseModel):
             raw: Any = json.loads(file.read_text(encoding="utf-8"))
             return cls.model_validate(raw)
         except Exception as exc:
-            log.error("книга репутации %s не читается (%s) — начинаем с пустой", file, exc)
+            log.error("reputation book %s is unreadable (%s) — starting empty", file, exc)
             return cls()
 
     def save(self, path: str | Path) -> None:
-        """Атомарно, как и состояние: половина файла хуже, чем его отсутствие."""
+        """Atomically, like state: half a file is worse than none."""
         file = Path(path)
         self.updated_at = time.time()
         tmp = file.with_suffix(file.suffix + f".tmp{os.getpid()}")
@@ -79,11 +81,11 @@ class ReputationBook(BaseModel):
                 os.fsync(fh.fileno())
             os.replace(tmp, file)
         except OSError as exc:
-            log.error("не удалось сохранить книгу репутации: %s", exc)
+            log.error("failed to save reputation book: %s", exc)
             with contextlib.suppress(OSError):
                 tmp.unlink(missing_ok=True)
 
-    # -- учёт --------------------------------------------------------------
+    # -- bookkeeping -------------------------------------------------------
 
     def _record(self, creator: str) -> CreatorRecord:
         record = self.creators.get(creator)
@@ -110,7 +112,7 @@ class ReputationBook(BaseModel):
         pnl_pct: float,
         rug_loss_pct: float,
     ) -> CreatorRecord | None:
-        """Закрытие позиции. Глубокий минус засчитывается адресу как слив."""
+        """Close a position. A deep loss is counted against the address as a rug."""
         if not creator:
             return None
         record = self._record(creator)
@@ -119,29 +121,29 @@ class ReputationBook(BaseModel):
         record.worst_pnl_pct = min(record.worst_pnl_pct, pnl_pct)
         if rug_loss_pct and -pnl_pct >= rug_loss_pct:
             record.rugs += 1
-            log.warning("создатель %s: слив %d, худший результат %.1f%% — "
-                        "его следующие токены отсекаются на входе",
+            log.warning("creator %s: rug %d, worst result %.1f%% — "
+                        "their next tokens are cut at the door",
                         creator[:8], record.rugs, record.worst_pnl_pct)
         return record
 
-    # -- решение -----------------------------------------------------------
+    # -- decision ----------------------------------------------------------
 
     def verdict(self, creator: str | None, block_after_rugs: int) -> str | None:
-        """Причина не связываться с этим адресом, или None."""
+        """Reason not to deal with this address, or None."""
         if not creator or block_after_rugs <= 0:
             return None
         record = self.creators.get(creator)
         if record is None:
             return None
         if record.rugs >= block_after_rugs:
-            return (f"создатель уже сливал {record.rugs} раз "
-                    f"(худшее {record.worst_pnl_pct:.0f}%)")
+            return (f"creator already rugged {record.rugs} times "
+                    f"(worst {record.worst_pnl_pct:.0f}%)")
         return None
 
-    # -- обслуживание ------------------------------------------------------
+    # -- maintenance -------------------------------------------------------
 
     def forget_older_than(self, days: float, now: float | None = None) -> int:
-        """Забыть адреса, о которых давно ничего не слышно. Сливы не забываем."""
+        """Forget addresses we have not heard from in a while. Rugs we keep."""
         if days <= 0:
             return 0
         cutoff = (now or time.time()) - days * 86_400
@@ -154,7 +156,7 @@ class ReputationBook(BaseModel):
         return len(stale)
 
     def _evict_if_crowded(self) -> None:
-        """Вытеснять начинаем с чистых адресов: сливы — ценность этой книги."""
+        """Evict clean addresses first: rugs are the value of this book."""
         if len(self.creators) <= MAX_CREATORS:
             return
         order = sorted(
@@ -168,4 +170,4 @@ class ReputationBook(BaseModel):
 
     def summary(self) -> str:
         bad = sum(1 for r in self.creators.values() if r.is_known_bad)
-        return f"адресов {len(self.creators)}, из них со сливами {bad}"
+        return f"addresses {len(self.creators)}, of them with rugs {bad}"

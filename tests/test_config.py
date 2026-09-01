@@ -84,7 +84,7 @@ def test_summary_is_log_safe():
 
 def test_mask_hides_short_secrets():
     assert mask("короткий") == "***"
-    assert mask("") == "<пусто>"
+    assert mask("") == "<empty>"
 
 
 def test_placeholder_detection():
@@ -138,7 +138,7 @@ def test_nonsense_values_are_errors(section, patch, marker):
 def test_zero_weights_rejected():
     cfg = config(scoring={"weights": {"audit": 0, "narrative": 0, "timing": 0, "metrics": 0}})
     errors, _ = cfg.problems()
-    assert any("веса" in e for e in errors)
+    assert any("weights" in e for e in errors)
 
 
 def test_live_without_wallet_key_rejected():

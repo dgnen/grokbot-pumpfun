@@ -465,7 +465,7 @@ async def test_creator_who_rugged_is_blocked_next_time(config):
 
     records = list(read_log(config.logging.path))
     assert records[-1]["stage"] == "reputation"
-    assert "сливал" in records[-1]["detail"]
+    assert "rugged" in records[-1]["detail"]
 
 
 async def test_blocklist_survives_restart(config):
@@ -824,9 +824,9 @@ async def test_timing_agent_gets_measured_data(config):
 
     assert captured, "тайминг-агента не спросили"
     наблюдения = captured[0]["наблюдения"]
-    assert наблюдения["лончей_в_окне"] >= 10
-    assert наблюдения["медиана_sol_в_кривой"] > 30
-    assert "час_utc" in наблюдения
+    assert наблюдения["launches_in_window"] >= 10
+    assert наблюдения["median_sol_in_curve"] > 30
+    assert "utc_hour" in наблюдения
     assert наблюдения["данных_мало"] is False
 
 
@@ -836,14 +836,14 @@ async def test_pulse_counts_launches_and_outcomes(config):
 
     pipeline._log_monitor_skip(fresh_token(), "few_buyers")     # отсеянный лонч
     await pipeline.process(fresh_token())                        # дожил до разбора
-    assert pipeline.pulse.snapshot()["лончей_в_окне"] == 1
-    assert pipeline.pulse.snapshot()["покупок_в_окне"] == 1
+    assert pipeline.pulse.snapshot()["launches_in_window"] == 1
+    assert pipeline.pulse.snapshot()["buys_in_window"] == 1
 
     position = pipeline.risk.positions["Mint1111"]
     move_price(0.05)
     await pipeline._sell(position, price=await pipeline._price(position.mint),
                          reason="stop_loss")
-    assert pipeline.pulse.snapshot()["доля_сливов"] == pytest.approx(1.0)
+    assert pipeline.pulse.snapshot()["rug_rate"] == pytest.approx(1.0)
 
 
 async def test_outcomes_restored_after_restart(config):
@@ -857,7 +857,7 @@ async def test_outcomes_restored_after_restart(config):
 
     second = Pipeline(config)
     second.restore()
-    assert second.pulse.snapshot()["закрытых_сделок_в_памяти"] == 1
+    assert second.pulse.snapshot()["closed_trades_in_memory"] == 1
 
 
 # --- переезд на Raydium ---------------------------------------------------

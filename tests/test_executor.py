@@ -77,7 +77,7 @@ async def test_buy_refused_above_impact_cap():
     executor = DryRunExecutor(config(max_price_impact_pct=1.5), client(LIVE_CURVE))
     result = await executor.buy(token(), 5.0)
     assert not result.ok
-    assert "влияние на цену" in result.error
+    assert "price impact" in result.error
     assert result.impact_pct > 1.5
 
 
@@ -85,7 +85,7 @@ async def test_buy_refused_without_curve_data():
     executor = DryRunExecutor(config(), client({}))
     result = await executor.buy(token(market_cap_sol=0.0), 0.4)
     assert not result.ok
-    assert "кривой неизвестно" in result.error
+    assert "curve state unknown" in result.error
 
 
 async def test_buy_falls_back_to_market_cap():

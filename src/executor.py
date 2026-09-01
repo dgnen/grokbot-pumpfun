@@ -1,14 +1,13 @@
-"""Исполнение сделок на Solana.
+"""Trade execution on Solana.
 
-ЗАГЛУШКА ПО ЗАМЫСЛУ в части отправки транзакций: `LiveExecutor` поднимает
-NotImplementedError, а рядом лежит список шагов, которые нужно дописать
-руками. Код, подписывающий транзакции приватным ключом, здесь не
-сгенерирован.
+INTENTIONALLY A STUB for transaction submission: `LiveExecutor` raises
+NotImplementedError, with a list of steps to fill in by hand. Code that
+signs transactions with a private key is not generated here.
 
-Всё остальное настоящее и, что важнее, честное: dry-run исполняется по
-математике кривой из `curve.py` — с комиссией, с проскальзыванием и с
-влиянием собственной заявки на цену. Раньше он покупал по цене котировки,
-и dry-run показывал прибыль, которой в live не бывает.
+Everything else is real and, more importantly, honest: dry-run executes
+against the curve math in `curve.py` — with fee, slippage, and the
+order's own price impact. It used to fill at the quote price, and
+dry-run showed profit that never happens in live.
 """
 
 from __future__ import annotations
@@ -47,11 +46,11 @@ __all__ = [
 
 
 class ExecutionResult(BaseModel):
-    """Итог попытки исполнения."""
+    """Outcome of an execution attempt."""
 
     ok: bool
     tx_hash: str = ""
-    price: float = 0.0           # средняя цена исполнения, а не котировка
+    price: float = 0.0           # average fill price, not the quote
     token_amount: float = 0.0
     sol_amount: float = 0.0
     fee_sol: float = 0.0
@@ -61,7 +60,7 @@ class ExecutionResult(BaseModel):
 
 
 class BaseExecutor:
-    """Общая часть: котировки, состояние кривой, расчёт исполнения."""
+    """Shared piece: quotes, curve state, execution math."""
 
     def __init__(self, config: Config, client: httpx.AsyncClient | None = None) -> None:
         self.config = config
@@ -90,17 +89,17 @@ class BaseExecutor:
             resp.raise_for_status()
             data = resp.json()
         except Exception as exc:
-            log.warning("данные по %s недоступны: %s", mint, exc)
+            log.warning("data for %s unavailable: %s", mint, exc)
             return {}
         return data if isinstance(data, dict) else {}
 
     async def curve(self, mint: str, market_cap_sol: float = 0.0) -> CurveState | None:
-        """Состояние кривой сейчас. None, если восстановить не из чего."""
+        """Current curve state. None if there is nothing to restore from."""
         return state_from_any(await self._coin(mint), market_cap_sol)
 
     async def price(self, mint: str) -> float:
-        """Спотовая цена. Ею меряются правила выхода — они про движение рынка,
-        а не про исполнение конкретной заявки."""
+        """Spot price. Exit rules use this — they track market movement,
+        not the fill of a particular order."""
         state = await self.curve(mint)
         return state.spot_price if state else 0.0
 
@@ -110,7 +109,7 @@ class BaseExecutor:
     async def sell(self, position: Position, fraction: float = 1.0) -> ExecutionResult:
         raise NotImplementedError
 
-    # -- расчёт, общий для обоих режимов ----------------------------------
+    # -- math shared by both modes ----------------------------------------
 
     def plan_buy(self, state: CurveState, size_sol: float) -> ExecutionResult:
         quote = buy_quote(state, size_sol, self.market.trade_fee_pct)
@@ -119,8 +118,8 @@ class BaseExecutor:
         if quote.impact_pct > self.market.max_price_impact_pct:
             return ExecutionResult(
                 ok=False,
-                error=(f"влияние на цену {quote.impact_pct:.2f}% выше "
-                       f"потолка {self.market.max_price_impact_pct:.2f}%"),
+                error=(f"price impact {quote.impact_pct:.2f}% exceeds "
+                       f"ceiling {self.market.max_price_impact_pct:.2f}%"),
                 impact_pct=quote.impact_pct,
             )
         return ExecutionResult(
@@ -149,8 +148,8 @@ class BaseExecutor:
 
     @staticmethod
     def _portion(position: Position, fraction: float) -> float:
-        """Сколько токенов продаём. Хвост меньше процента добираем целиком:
-        оставлять пыль в позиции незачем, она только мешает учёту."""
+        """How many tokens we sell. A tail under one percent is taken whole:
+        leaving dust in the position is pointless, it only messes up accounting."""
         fraction = max(0.0, min(1.0, fraction))
         tokens = position.token_amount * fraction
         if position.token_amount - tokens < position.token_amount * 0.01:
@@ -159,24 +158,24 @@ class BaseExecutor:
 
 
 class DryRunExecutor(BaseExecutor):
-    """Проходит весь путь, кроме отправки транзакции."""
+    """Walks the full path except submitting the transaction."""
 
     async def buy(self, token: Token, size_sol: float) -> ExecutionResult:
         state = await self.curve(token.mint, token.market_cap_sol)
         if state is None:
-            # Позиция с неизвестной ценой входа неуправляема: ни одно
-            # правило выхода на ней не срабатывает.
-            log.warning("покупка %s отменена: состояние кривой неизвестно", token.mint[:8])
-            return ExecutionResult(ok=False, error="состояние кривой неизвестно")
+            # A position with an unknown entry price is unmanageable: no
+            # exit rule can fire on it.
+            log.warning("buy %s cancelled: curve state unknown", token.mint[:8])
+            return ExecutionResult(ok=False, error="curve state unknown")
 
         result = self.plan_buy(state, size_sol)
         if not result.ok:
-            log.warning("покупка %s отменена: %s", token.mint[:8], result.error)
+            log.warning("buy %s cancelled: %s", token.mint[:8], result.error)
             return result
 
         result.tx_hash = DRY_RUN_TX
-        log.info("[dry-run] куплено %s: %.4f SOL -> %.0f токенов по %.12f "
-                 "(комиссия %.4f SOL, влияние %.2f%%)",
+        log.info("[dry-run] bought %s: %.4f SOL -> %.0f tokens at %.12f "
+                 "(fee %.4f SOL, impact %.2f%%)",
                  token.mint[:8], size_sol, result.token_amount, result.price,
                  result.fee_sol, result.impact_pct)
         return result
@@ -184,15 +183,15 @@ class DryRunExecutor(BaseExecutor):
     async def sell(self, position: Position, fraction: float = 1.0) -> ExecutionResult:
         state = await self.curve(position.mint)
         if state is None:
-            return ExecutionResult(ok=False, error="состояние кривой неизвестно")
+            return ExecutionResult(ok=False, error="curve state unknown")
 
         tokens = self._portion(position, fraction)
         if state.complete:
-            # Кривой больше нет: токен торгуется на Raydium со своей
-            # ликвидностью, и постоянное произведение к нему неприменимо.
-            # Считаем по споту без влияния и честно помечаем прикидкой.
-            log.warning("%s уже на Raydium: выручка посчитана по споту, "
-                        "без проскальзывания — это прикидка, а не котировка",
+            # The curve is gone: the token trades on Raydium with its own
+            # liquidity, and constant-product math no longer applies.
+            # Price at spot with no impact and mark it honestly as an estimate.
+            log.warning("%s already on Raydium: proceeds priced at spot, "
+                        "no slippage — this is an estimate, not a quote",
                         position.mint[:8])
             gross = tokens * state.spot_price
             fee = gross * self.market.trade_fee_pct / 100.0
@@ -206,19 +205,19 @@ class DryRunExecutor(BaseExecutor):
             return result
 
         result.tx_hash = DRY_RUN_TX
-        log.info("[dry-run] продано %s: %.0f токенов -> %.4f SOL по %.12f "
-                 "(комиссия %.4f SOL, влияние %.2f%%)",
+        log.info("[dry-run] sold %s: %.0f tokens -> %.4f SOL at %.12f "
+                 "(fee %.4f SOL, impact %.2f%%)",
                  position.mint[:8], tokens, result.sol_amount, result.price,
                  result.fee_sol, result.impact_pct)
         return result
 
 
 class LiveExecutor(BaseExecutor):
-    """Реальная отправка транзакций. Намеренно не реализована.
+    """Real transaction submission. Intentionally unimplemented.
 
-    Расчёт заявки при этом уже готов: `plan_buy` и `plan_sell` дают и
-    ожидаемое количество токенов, и среднюю цену, и влияние на цену —
-    из них берутся `max_sol_cost` и `min_sol_output` с нужным допуском.
+    Order math is already ready: `plan_buy` and `plan_sell` give the
+    expected token amount, average price, and price impact — `max_sol_cost`
+    and `min_sol_output` are taken from those with the needed tolerance.
     """
 
     def __init__(self, config: Config, client: httpx.AsyncClient | None = None) -> None:
@@ -227,41 +226,41 @@ class LiveExecutor(BaseExecutor):
         self.jito = config.solana.jito
 
     async def buy(self, token: Token, size_sol: float) -> ExecutionResult:
-        # TODO(live): покупка на бондинговой кривой pump.fun.
-        #  1. Загрузить Keypair из config.solana.wallet_private_key (solders.keypair).
-        #  2. Получить аккаунты кривой: bonding_curve, associated_bonding_curve,
-        #     global, fee_recipient — и создать ATA покупателя, если её нет.
-        #  3. Взять расчёт из self.plan_buy(state, size_sol): ожидаемые токены
-        #     и средняя цена уже посчитаны с комиссией и проскальзыванием.
-        #     max_sol_cost = size_sol * (1 + допуск), допуск порядка 1-2%.
-        #  4. Собрать инструкцию `buy` программы
-        #     6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P и ComputeBudget:
-        #     цену за юнит и лимит.
-        #  5. При config.solana.jito.enabled — добавить перевод чаевых
-        #     (jito.tip_lamports) на tip-аккаунт и отправить бандл на
-        #     jito.block_engine_url; иначе send_transaction через RPC.
-        #  6. Дождаться подтверждения, вернуть ExecutionResult с реальными
-        #     tx_hash, ценой исполнения и полученным количеством токенов.
-        #     Чаевые Jito вычесть из sol_amount: это тоже стоимость сделки.
+        # TODO(live): buy on the pump.fun bonding curve.
+        #  1. Load a Keypair from config.solana.wallet_private_key (solders.keypair).
+        #  2. Fetch curve accounts: bonding_curve, associated_bonding_curve,
+        #     global, fee_recipient — and create the buyer's ATA if missing.
+        #  3. Take the math from self.plan_buy(state, size_sol): expected tokens
+        #     and average price already include fee and slippage.
+        #     max_sol_cost = size_sol * (1 + tolerance), tolerance around 1-2%.
+        #  4. Build the `buy` instruction of program
+        #     6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P and ComputeBudget:
+        #     unit price and limit.
+        #  5. If config.solana.jito.enabled — add a tip transfer
+        #     (jito.tip_lamports) to a tip account and send a bundle to
+        #     jito.block_engine_url; otherwise send_transaction via RPC.
+        #  6. Wait for confirmation, return ExecutionResult with the real
+        #     tx_hash, fill price, and tokens received.
+        #     Subtract the Jito tip from sol_amount: it is also a trade cost.
         raise NotImplementedError(
-            "LiveExecutor.buy не реализован намеренно: допишите отправку "
-            "транзакций сами, прежде чем включать mode: live"
+            "LiveExecutor.buy is intentionally unimplemented: write the "
+            "transaction submission yourself before enabling mode: live"
         )
 
     async def sell(self, position: Position, fraction: float = 1.0) -> ExecutionResult:
-        # TODO(live): продажа. Та же схема, что и buy, но инструкция `sell`,
-        #  min_sol_output из self.plan_sell(state, tokens) с допуском вниз,
-        #  и закрытие ATA после полного выхода (при частичном — не закрывать).
+        # TODO(live): sell. Same scheme as buy, but the `sell` instruction,
+        #  min_sol_output from self.plan_sell(state, tokens) with downward
+        #  tolerance, and close the ATA after a full exit (not on a partial).
         raise NotImplementedError(
-            "LiveExecutor.sell не реализован намеренно: допишите отправку "
-            "транзакций сами, прежде чем включать mode: live"
+            "LiveExecutor.sell is intentionally unimplemented: write the "
+            "transaction submission yourself before enabling mode: live"
         )
 
 
 def build_executor(config: Config, client: httpx.AsyncClient | None = None) -> BaseExecutor:
-    """Исполнитель по режиму из конфига."""
+    """Executor for the mode in the config."""
     if config.is_live:
-        log.warning("режим live: используется LiveExecutor")
+        log.warning("live mode: using LiveExecutor")
         return LiveExecutor(config, client)
     return DryRunExecutor(config, client)
 

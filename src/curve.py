@@ -1,25 +1,26 @@
-"""Математика бондинговой кривой pump.fun.
+"""Bonding-curve math for pump.fun.
 
-До этого модуля пайплайн считал, что покупка происходит по цене котировки.
-Это неправда сразу трижды: биржа берёт комиссию, покупка двигает цену
-против покупателя, и на выходе всё повторяется в обратную сторону. На
-кривой с несколькими десятками SOL резерва заявка на 0.5 SOL — это заметная
-доля ликвидности, а не пылинка.
+Before this module the pipeline treated a buy as filling at the quote
+price. That is wrong three times over: the venue takes a fee, the buy
+moves the price against the buyer, and on the way out the same happens
+in reverse. On a curve with a few dozen SOL of reserve, a 0.5 SOL order
+is a noticeable share of liquidity, not a speck.
 
-Практический смысл: без этих поправок dry-run показывает прибыль, которой
-в live не будет, а именно по dry-run принимается решение включать live.
-Лучше пусть цифры будут скучнее, но настоящие.
+Practical point: without these corrections dry-run shows profit that
+will not exist in live, and the live-on decision is made from dry-run.
+Better the numbers be duller, but real.
 
-Кривая — постоянное произведение на виртуальных резервах:
+The curve is constant product on virtual reserves:
 
     k = sol_reserves * token_reserves = const
 
-Покупка добавляет SOL и забирает токены, продажа наоборот. Комиссия
-снимается с входящей стороны при покупке и с исходящей при продаже.
+A buy adds SOL and takes tokens, a sell the reverse. The fee is taken
+from the inbound side on a buy and from the outbound side on a sell.
 
-ОГОВОРКА: константы ниже — параметры программы pump.fun, какими они были
-на момент написания. Программа обновляется. Перед включением live сверьте
-их с ончейн-состоянием `global`-аккаунта, а не доверяйте этому файлу.
+CAVEAT: the constants below are the pump.fun program parameters as they
+were at the time of writing. The program is updated. Before enabling
+live, check them against the on-chain `global` account state; do not
+trust this file.
 """
 
 from __future__ import annotations
@@ -29,28 +30,28 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-# Стартовые виртуальные резервы новой кривой.
+# Starting virtual reserves of a fresh curve.
 INITIAL_VIRTUAL_SOL = 30.0
 INITIAL_VIRTUAL_TOKENS = 1_073_000_191.0
 
-# Полный выпуск и та его часть, что реально продаётся на кривой.
+# Full issuance and the part that is actually sold on the curve.
 TOTAL_SUPPLY = 1_000_000_000.0
 CURVE_TOKEN_SUPPLY = 793_100_000.0
 
-# Столько реальных SOL набирает кривая к моменту переезда на Raydium.
+# Real SOL the curve holds by the time it migrates to Raydium.
 CURVE_COMPLETION_SOL = 85.0
 
-# Комиссия площадки с каждой сделки, процентов.
+# Venue fee on every trade, percent.
 DEFAULT_TRADE_FEE_PCT = 1.0
 
 
 class CurveState(BaseModel):
-    """Виртуальные резервы кривой. Всё в SOL и целых токенах."""
+    """Virtual curve reserves. All in SOL and whole tokens."""
 
     sol_reserves: float = INITIAL_VIRTUAL_SOL
     token_reserves: float = INITIAL_VIRTUAL_TOKENS
-    # Кривая закончилась, токен уехал на Raydium. Вся математика этого
-    # модуля с этого момента к нему неприменима.
+    # The curve is finished, the token moved to Raydium. All math in
+    # this module no longer applies to it from this point.
     complete: bool = False
 
     @property
@@ -63,29 +64,30 @@ class CurveState(BaseModel):
 
     @property
     def spot_price(self) -> float:
-        """Цена бесконечно малой сделки. Ею и торговали до этого модуля."""
+        """Price of an infinitesimal trade. This is what we traded on before."""
         if not self.is_valid:
             return 0.0
         return self.sol_reserves / self.token_reserves
 
     @property
     def real_sol(self) -> float:
-        """Сколько настоящих SOL уже внесено в кривую."""
+        """How many real SOL have already been put into the curve."""
         return max(0.0, self.sol_reserves - INITIAL_VIRTUAL_SOL)
 
     @property
     def progress(self) -> float:
-        """Заполнение кривой, 0..1. По реальным SOL, а не по виртуальным."""
+        """Curve fill, 0..1. By real SOL, not virtual."""
         return max(0.0, min(1.0, self.real_sol / CURVE_COMPLETION_SOL))
 
     @classmethod
     def from_spot_price(cls, spot: float) -> CurveState | None:
-        """Резервы из одной лишь спотовой цены.
+        """Reserves from spot price alone.
 
-        Произведение резервов на кривой постоянно, поэтому пара
-        (sol, tokens) восстанавливается однозначно:
+        The product of reserves on the curve is constant, so the pair
+        (sol, tokens) is recovered uniquely:
             sol = sqrt(k * spot),  tokens = sqrt(k / spot).
-        Это не приближение, а тождество — пока токен не уехал на Raydium.
+        This is an identity, not an approximation — until the token
+        moves to Raydium.
         """
         if spot <= 0:
             return None
@@ -94,10 +96,10 @@ class CurveState(BaseModel):
 
     @classmethod
     def from_api(cls, data: dict[str, Any]) -> CurveState | None:
-        """Резервы из ответа провайдера. None, если их там нет.
+        """Reserves from a provider response. None if they are not there.
 
-        Провайдеры отдают их в лампортах и в «сырых» единицах токена
-        (6 знаков), поэтому приводим к человеческим числам.
+        Providers return them in lamports and in raw token units
+        (6 decimals), so we convert to human numbers.
         """
         sol_raw = data.get("virtual_sol_reserves")
         token_raw = data.get("virtual_token_reserves")
@@ -115,20 +117,20 @@ class CurveState(BaseModel):
 
 
 class Quote(BaseModel):
-    """Что на самом деле получится, если отправить эту заявку сейчас."""
+    """What you actually get if you send this order now."""
 
     ok: bool = True
     reason: str = ""
 
-    sol_in: float = 0.0          # для покупки — сколько SOL уходит всего
-    sol_out: float = 0.0         # для продажи — сколько SOL приходит на руки
-    tokens: float = 0.0          # сколько токенов получено или продано
+    sol_in: float = 0.0          # on a buy — how much SOL leaves in total
+    sol_out: float = 0.0         # on a sell — how much SOL lands in hand
+    tokens: float = 0.0          # tokens received or sold
     fee_sol: float = 0.0
 
-    spot_price: float = 0.0      # цена до сделки
-    avg_price: float = 0.0       # средняя цена исполнения — по ней и считаем PnL
+    spot_price: float = 0.0      # price before the trade
+    avg_price: float = 0.0       # average fill price — PnL is counted on this
     price_after: float = 0.0
-    impact_pct: float = 0.0      # насколько средняя цена хуже котировки
+    impact_pct: float = 0.0      # how much worse the average is than the quote
 
     state_after: CurveState = Field(default_factory=CurveState)
 
@@ -138,27 +140,27 @@ def buy_quote(
     sol_in: float,
     fee_pct: float = DEFAULT_TRADE_FEE_PCT,
 ) -> Quote:
-    """Покупка на `sol_in` SOL: сколько токенов и по какой средней цене.
+    """Buy for `sol_in` SOL: how many tokens and at what average price.
 
-    Комиссия снимается со входящих SOL: в кривую попадает меньше, чем
-    списано с кошелька, а средняя цена считается по списанному — именно
-    она определяет, в плюсе позиция или нет.
+    The fee is taken from inbound SOL: less reaches the curve than is
+    debited from the wallet, and the average price is counted on the
+    debit — that is what decides whether the position is in the black.
     """
     if sol_in <= 0:
-        return Quote(ok=False, reason="нулевая заявка")
+        return Quote(ok=False, reason="zero-size order")
     if not state.is_valid:
-        return Quote(ok=False, reason="резервы кривой неизвестны")
+        return Quote(ok=False, reason="curve reserves unknown")
 
     fee = sol_in * max(0.0, fee_pct) / 100.0
     sol_to_curve = sol_in - fee
     if sol_to_curve <= 0:
-        return Quote(ok=False, reason="комиссия съедает заявку целиком")
+        return Quote(ok=False, reason="fee consumes the entire order")
 
     new_sol = state.sol_reserves + sol_to_curve
     new_tokens = state.k / new_sol
     tokens_out = state.token_reserves - new_tokens
     if tokens_out <= 0:
-        return Quote(ok=False, reason="кривая не отдаёт токены на такую заявку")
+        return Quote(ok=False, reason="curve does not yield tokens for this order")
 
     after = CurveState(sol_reserves=new_sol, token_reserves=new_tokens)
     avg_price = sol_in / tokens_out
@@ -180,17 +182,17 @@ def sell_quote(
     tokens_in: float,
     fee_pct: float = DEFAULT_TRADE_FEE_PCT,
 ) -> Quote:
-    """Продажа `tokens_in` токенов: сколько SOL останется после комиссии."""
+    """Sell `tokens_in` tokens: how much SOL is left after the fee."""
     if tokens_in <= 0:
-        return Quote(ok=False, reason="нулевая заявка")
+        return Quote(ok=False, reason="zero-size order")
     if not state.is_valid:
-        return Quote(ok=False, reason="резервы кривой неизвестны")
+        return Quote(ok=False, reason="curve reserves unknown")
 
     new_tokens = state.token_reserves + tokens_in
     new_sol = state.k / new_tokens
     gross = state.sol_reserves - new_sol
     if gross <= 0:
-        return Quote(ok=False, reason="кривая не отдаёт SOL на такую заявку")
+        return Quote(ok=False, reason="curve does not yield SOL for this order")
 
     fee = gross * max(0.0, fee_pct) / 100.0
     net = gross - fee
@@ -214,18 +216,18 @@ def max_sol_for_impact(
     max_impact_pct: float,
     fee_pct: float = DEFAULT_TRADE_FEE_PCT,
 ) -> float:
-    """Самая крупная покупка, укладывающаяся в заданное влияние на цену.
+    """Largest buy that fits inside the given price impact.
 
-    Выводится точно, без перебора. Пусть S и T — резервы, f — доля
-    комиссии, s — то, что доходит до кривой. Тогда
+    Derived exactly, no search. Let S and T be reserves, f the fee
+    share, s what reaches the curve. Then
 
         tokens_out = T - k/(S+s) = T·s/(S+s)
         avg = sol_in/tokens_out = (S+s) / (T·(1-f))
         avg/spot = (1 + s/S) / (1-f)
 
-    отсюда предельная доля резерва s/S = (1+impact)·(1-f) - 1, а сама
-    заявка получается делением на (1-f): комиссия до кривой не доходит,
-    но в среднюю цену входит.
+    so the limiting reserve share is s/S = (1+impact)·(1-f) - 1, and
+    the order itself is that divided by (1-f): the fee never reaches
+    the curve, but it is in the average price.
     """
     if not state.is_valid or max_impact_pct <= 0:
         return 0.0
@@ -233,7 +235,7 @@ def max_sol_for_impact(
 
     share = (1.0 + max_impact_pct / 100.0) * (1.0 - fee_share) - 1.0
     if share <= 0:
-        return 0.0          # одна комиссия уже съедает весь допуск
+        return 0.0          # the fee alone already eats the entire allowance
     return state.sol_reserves * share / (1.0 - fee_share)
 
 
@@ -242,10 +244,11 @@ def round_trip_cost_pct(
     sol_in: float,
     fee_pct: float = DEFAULT_TRADE_FEE_PCT,
 ) -> float:
-    """Во сколько процентов обойдётся вход и немедленный выход.
+    """What percent an entry and immediate exit will cost.
 
-    Это порог, ниже которого сделка не имеет смысла: если ожидаемое
-    движение меньше, чем стоимость входа-выхода, торговать нечем.
+    This is the floor below which a trade has no point: if the expected
+    move is less than the cost of getting in and out, there is nothing
+    to trade.
     """
     buy = buy_quote(state, sol_in, fee_pct)
     if not buy.ok:
@@ -257,7 +260,7 @@ def round_trip_cost_pct(
 
 
 def state_from_any(data: dict[str, Any], market_cap_sol: float = 0.0) -> CurveState | None:
-    """Состояние кривой из чего угодно: резервов, капитализации, цены."""
+    """Curve state from anything: reserves, market cap, price."""
     state = CurveState.from_api(data)
     if state is not None:
         return state
@@ -271,7 +274,7 @@ def state_from_any(data: dict[str, Any], market_cap_sol: float = 0.0) -> CurveSt
 
 
 def price_from_reserves(data: dict[str, Any]) -> float:
-    """Спотовая цена из ответа провайдера, с запасным вариантом по капитализации."""
+    """Spot price from a provider response, with a market-cap fallback."""
     state = CurveState.from_api(data)
     if state is not None:
         return state.spot_price
@@ -285,7 +288,7 @@ def price_from_reserves(data: dict[str, Any]) -> float:
 
 
 def progress_from_sol(sol_in_curve: float) -> float:
-    """Заполнение кривой по одному лишь объёму SOL — как его отдаёт сокет."""
+    """Curve fill from SOL volume alone — as the socket reports it."""
     if sol_in_curve <= 0:
         return 0.0
     real = max(0.0, sol_in_curve - INITIAL_VIRTUAL_SOL)
@@ -293,16 +296,16 @@ def progress_from_sol(sol_in_curve: float) -> float:
 
 
 def tokens_for_market_cap(market_cap_sol: float) -> float:
-    """Обратная прикидка: сколько токенов на SOL при такой капитализации."""
+    """Inverse estimate: how many tokens per SOL at this market cap."""
     if market_cap_sol <= 0:
         return 0.0
     return TOTAL_SUPPLY / market_cap_sol
 
 
 def sanity_check() -> dict[str, float]:
-    """Числа, по которым видно, что модуль считает не ерунду.
+    """Numbers that show the module is not computing nonsense.
 
-    Полезно вызвать руками после обновления констант программы.
+    Useful to call by hand after updating the program constants.
     """
     fresh = CurveState()
     return {

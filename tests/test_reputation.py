@@ -28,7 +28,7 @@ def test_rug_blocks_next_token(book):
     rug(book)
     verdict = book.verdict("C1", block_after_rugs=1)
     assert verdict is not None
-    assert "сливал" in verdict
+    assert "rugged" in verdict
 
 
 def test_moderate_loss_is_not_a_rug(book):
@@ -148,7 +148,7 @@ def test_eviction_prefers_clean_addresses(book, monkeypatch):
 def test_summary_counts_bad(book):
     book.observe("C1")
     rug(book, "C2")
-    assert "со сливами 1" in book.summary()
+    assert "with rugs 1" in book.summary()
 
 
 def test_record_defaults_are_harmless():
