@@ -176,9 +176,9 @@ def test_build_executor_picks_by_mode():
 
 async def test_live_executor_is_a_deliberate_stub():
     executor = LiveExecutor(config(), client(LIVE_CURVE))
-    with pytest.raises(NotImplementedError, match="намеренно"):
+    with pytest.raises(NotImplementedError, match="intentionally unimplemented"):
         await executor.buy(token(), 0.4)
-    with pytest.raises(NotImplementedError, match="намеренно"):
+    with pytest.raises(NotImplementedError, match="intentionally unimplemented"):
         await executor.sell(position())
 
 
