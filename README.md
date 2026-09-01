@@ -2,125 +2,126 @@
 
 [![CI](https://github.com/zostaff/grokbot-pumpfun/actions/workflows/ci.yml/badge.svg)](https://github.com/zostaff/grokbot-pumpfun/actions/workflows/ci.yml)
 
-Пайплайн мемкоин-трейдинга на pump.fun: поток новых лончей проходит девять
-ступеней, из которых четыре — агенты на Grok API, а остальные считают кодом.
-Смысл конструкции в порядке ступеней: дешёвые фильтры стоят раньше дорогих,
-и до сильной модели доходит доля процента потока.
+A memecoin trading pipeline on pump.fun: the stream of new launches goes
+through nine stages, four of which are Grok API agents and the rest are
+plain code. The point of the design is the order of the stages: cheap
+filters come before expensive ones, and only a fraction of a percent of
+the stream reaches the strong model.
 
-**Исполнение сделок намеренно оставлено заглушкой.** Код, отправляющий
-транзакции вашим ключом, здесь не сгенерирован — см. [Executor](#executor).
-По умолчанию проект работает в `dry-run`.
+**Trade execution is intentionally left as a stub.** Code that would send
+transactions with your key is not generated here — see [Executor](#executor).
+By default the project runs in `dry-run`.
 
-## Архитектура
+## Architecture
 
 ```
-                    поток новых токенов pump.fun
+                    stream of new pump.fun tokens
                                 │
 ┌───────────────────────────────▼───────────────────────────────┐
-│ 1. МОНИТОР            WebSocket, фильтр кодом                 │
-│    ≥5 покупателей · кривая <40% · есть метаданные · >2 мин    │
+│ 1. MONITOR            WebSocket, code filter                  │
+│    ≥5 buyers · curve <40% · has metadata · >2 min             │
 └───────────────────────────────┬───────────────────────────────┘
-                    отсев ~94%  │
+                    ~94% filtered │
 ┌───────────────────────────────▼───────────────────────────────┐
-│ 1.5 ПАМЯТЬ О СОЗДАТЕЛЯХ  код, свой лог закрытых сделок        │
-│    адрес, чей токен уже сложился, дальше не идёт              │
+│ 1.5 CREATOR MEMORY    code, own log of closed trades          │
+│    an address whose token already rugged goes no further      │
 └───────────────────────────────┬───────────────────────────────┘
                                 │
 ┌───────────────────────────────▼───────────────────────────────┐
-│ 2. АНАЛИЗАТОР         REST ×3 параллельно (asyncio.gather)    │
-│    топ-5 · снайперы · разнообразие · соцсигналы · кривая      │
-│    отсечка по risk_score > 7/10; безусловное вето, если       │
-│    создатель держит ≥25% или топ-5 держат ≥80%                │
-│    торгуемость: тонкая кривая и дорогой вход-выход — мимо     │
+│ 2. ANALYZER           REST ×3 in parallel (asyncio.gather)    │
+│    top-5 · snipers · diversity · social signals · curve       │
+│    cut off if risk_score > 7/10; unconditional veto if        │
+│    creator holds ≥25% or top-5 hold ≥80%                      │
+│    tradability: thin curve and expensive round-trip — skip    │
 └───────────────────────────────┬───────────────────────────────┘
                                 │
         ┌───────────────────────┼───────────────────────┐
         ▼                       ▼                       ▼
 ┌───────────────┐      ┌────────────────┐      ┌────────────────┐
-│ 3. АУДИТОР    │      │ 4. НАРРАТИВ    │      │ 5. ТАЙМИНГ     │
+│ 3. AUDITOR    │      │ 4. NARRATIVE   │      │ 5. TIMING      │
 │ grok-4-fast   │      │ grok-4-fast    │      │ grok-4-fast    │
-│ координация,  │      │ тренд,         │      │ рынок целиком, │
-│ wash, дамп,   │      │ виральность,   │      │ кэш 15 мин     │
-│ органика      │      │ коммьюнити     │      │                │
+│ coordination, │      │ trend,         │      │ market as a    │
+│ wash, dump,   │      │ virality,      │      │ whole, 15 min  │
+│ organic       │      │ community      │      │ cache          │
 └───────┬───────┘      └────────┬───────┘      └────────┬───────┘
         └───────────────────────┼───────────────────────┘
                                 ▼
 ┌───────────────────────────────────────────────────────────────┐
-│ 6. СКОРИНГ-МАТРИЦА    код, веса из конфига                    │
+│ 6. SCORING MATRIX     code, weights from config               │
 │    audit·0.30 + narrative·0.25 + timing·0.15 + metrics·0.30   │
-│    ниже min_total_score → skip с причиной                     │
+│    below min_total_score → skip with a reason                 │
 └───────────────────────────────┬───────────────────────────────┘
                                 │
 ┌───────────────────────────────▼───────────────────────────────┐
-│ 7. ЧЕКЕР              grok-4, адверсариальный                 │
-│    ищет причины НЕ покупать: противоречия, пропущенные флаги  │
-│    approve: false — нормальный исход; ошибка тоже false       │
+│ 7. CHECKER            grok-4, adversarial                     │
+│    looks for reasons NOT to buy: contradictions, missed flags │
+│    approve: false — a normal outcome; an error is also false  │
 └───────────────────────────────┬───────────────────────────────┘
                                 │
 ┌───────────────────────────────▼───────────────────────────────┐
-│ 8. РИСК-ГЕЙТ          код, шесть лимитов                      │
-│    потолок сделки · дневной убыток · сделок/день ·            │
-│    открытых позиций · общая экспозиция · ликвидность кривой   │
+│ 8. RISK GATE          code, six limits                        │
+│    per-trade cap · daily loss · trades/day ·                  │
+│    open positions · total exposure · curve liquidity          │
 └───────────────────────────────┬───────────────────────────────┘
                                 │
 ┌───────────────────────────────▼───────────────────────────────┐
-│ 9. ИСПОЛНЕНИЕ         по математике кривой: комиссия,         │
-│    проскальзывание, влияние своей заявки на цену              │
-│    dry-run: tx_hash "dry_run" · live: заглушка по замыслу     │
+│ 9. EXECUTION          from curve math: fee,                   │
+│    slippage, own order's impact on price                      │
+│    dry-run: tx_hash "dry_run" · live: a stub by design        │
 └───────────────────────────────┬───────────────────────────────┘
                                 │
 ┌───────────────────────────────▼───────────────────────────────┐
-│ 10. ВЫХОДЫ            фоновая задача, приоритет сверху вниз   │
-│    стоп-лосс · переезд на Raydium · take-profit (можно долей) │
-│    трейлинг от пика · лимит удержания                         │
+│ 10. EXITS             background task, priority top to bottom │
+│    stop-loss · migrate to Raydium · take-profit (can be a     │
+│    fraction) · trailing from peak · hold-time limit           │
 └───────────────────────────────┬───────────────────────────────┘
                                 ▼
-              JSONL-лог: intent / buy / skip / close
+              JSONL log: intent / buy / skip / close
 ```
 
-## Структура
+## Structure
 
 ```
 grokbot-pumpfun/
 ├── README.md
-├── RUNBOOK.md                # эксплуатация: запуск, инциденты, чек-листы
-├── pyproject.toml            # пакет, ruff, mypy, pytest
+├── RUNBOOK.md                # operations: startup, incidents, checklists
+├── pyproject.toml            # package, ruff, mypy, pytest
 ├── Makefile                  # make dev / check / run / replay
-├── Dockerfile                # образ без ключей внутри
+├── Dockerfile                # image with no keys inside
 ├── docker-compose.yml
 ├── requirements.txt
 ├── requirements-dev.txt
-├── config.example.yaml       # шаблон; config.yaml в .gitignore
-├── .env.example              # секреты для compose; .env в .gitignore
-├── .github/workflows/ci.yml  # ruff + mypy + pytest на 3.11-3.13 + образ
+├── config.example.yaml       # template; config.yaml is in .gitignore
+├── .env.example              # secrets for compose; .env is in .gitignore
+├── .github/workflows/ci.yml  # ruff + mypy + pytest on 3.11-3.13 + image
 ├── src/
 │   ├── cli.py                # grokbot run|check|doctor|replay|tune|curve
-│   ├── pipeline.py           # оркестратор, жизненный цикл, точка входа
-│   ├── curve.py              # математика кривой: комиссия, проскальзывание
-│   ├── doctor.py             # предполётная проверка окружения
-│   ├── market.py             # пульс рынка для агента-тайминга
-│   ├── reputation.py         # память о создателях токенов
-│   ├── alerts.py             # уведомления во внешний webhook
-│   ├── models.py             # pydantic-модели, конфиг, валидация, секреты
-│   ├── monitor.py            # WebSocket-монитор лончей (код)
-│   ├── analyzer.py           # REST-анализатор метрик (код)
+│   ├── pipeline.py           # orchestrator, lifecycle, entry point
+│   ├── curve.py              # curve math: fee, slippage
+│   ├── doctor.py             # pre-flight environment check
+│   ├── market.py             # market pulse for the timing agent
+│   ├── reputation.py         # memory of token creators
+│   ├── alerts.py             # notifications to an external webhook
+│   ├── models.py             # pydantic models, config, validation, secrets
+│   ├── monitor.py            # WebSocket launch monitor (code)
+│   ├── analyzer.py           # REST metrics analyzer (code)
 │   ├── agents/
-│   │   ├── base.py           # общая механика вызова Grok
-│   │   ├── auditor.py        # агент 1: аудит кошельков
-│   │   ├── narrative.py      # агент 2: мем-потенциал
-│   │   ├── timing.py         # агент 3: момент рынка (с кэшем)
-│   │   └── checker.py        # агент 4: адверсариальная проверка
-│   ├── scoring.py            # скоринг-матрица (код)
-│   ├── risk.py               # риск-менеджер и правила выхода
-│   ├── state.py              # состояние, переживающее рестарт
-│   ├── ops.py                # ограничители Grok, метрики, health, heartbeat
-│   ├── executor.py           # исполнение: dry-run рабочий, live — заглушка
-│   └── log.py                # JSONL-логирование с ротацией
-├── tests/                    # pytest, в сеть не ходят
+│   │   ├── base.py           # shared Grok call mechanics
+│   │   ├── auditor.py        # agent 1: wallet audit
+│   │   ├── narrative.py      # agent 2: meme potential
+│   │   ├── timing.py         # agent 3: market moment (with cache)
+│   │   └── checker.py        # agent 4: adversarial review
+│   ├── scoring.py            # scoring matrix (code)
+│   ├── risk.py               # risk manager and exit rules
+│   ├── state.py              # state that survives a restart
+│   ├── ops.py                # Grok limiters, metrics, health, heartbeat
+│   ├── executor.py           # execution: dry-run works, live is a stub
+│   └── log.py                # JSONL logging with rotation
+├── tests/                    # pytest, does not go to the network
 └── scripts/
-    ├── replay.py             # реплей лога и статистика
-    ├── dashboard.py          # CLI-дашборд
-    └── tune.py               # подбор весов и порога по логу
+    ├── replay.py             # log replay and statistics
+    ├── dashboard.py          # CLI dashboard
+    └── tune.py               # pick weights and threshold from the log
 ```
 
 ## Quick start
@@ -129,22 +130,23 @@ grokbot-pumpfun/
 git clone https://github.com/zostaff/grokbot-pumpfun.git
 cd grokbot-pumpfun
 
-make dev                     # venv, зависимости, линтер и тесты
+make dev                     # venv, dependencies, linter and tests
 cp config.example.yaml config.yaml
-$EDITOR config.yaml          # ключ Grok; остальное можно оставить как есть
+$EDITOR config.yaml          # Grok key; the rest can stay as-is
 
-grokbot doctor               # предполётная проверка: ключи, сеть, права
-grokbot run                  # dry-run, режим по умолчанию
+grokbot doctor               # pre-flight check: keys, network, permissions
+grokbot run                  # dry-run, the default mode
 ```
 
-Ключи можно вообще не класть в файл — переменные окружения важнее его:
+You do not have to put keys in the file at all — environment variables
+take precedence:
 
 ```bash
 export GROKBOT_GROK_API_KEY=xai-...
 make run
 ```
 
-В контейнере:
+In a container:
 
 ```bash
 cp .env.example .env && $EDITOR .env
@@ -152,384 +154,404 @@ mkdir -p config logs state && cp config.example.yaml config/config.yaml
 docker compose up -d && docker compose logs -f
 ```
 
-Что происходит дальше: пайплайн подписывается на новые лончи и пишет
-`logs/trades.jsonl`. Смотреть можно на ходу:
+What happens next: the pipeline subscribes to new launches and writes
+`logs/trades.jsonl`. You can watch it live:
 
 ```bash
-python scripts/dashboard.py logs/trades.jsonl --watch 5   # что сейчас
-python scripts/replay.py   logs/trades.jsonl              # сводка за период
+python scripts/dashboard.py logs/trades.jsonl --watch 5   # what is happening now
+python scripts/replay.py   logs/trades.jsonl              # period summary
 ```
 
-Тесты:
+Tests:
 
 ```bash
 pytest -v
 ```
 
-## Агенты
+## Agents
 
-**Аудитор** (`grok-4-fast`) получает сырой поток сделок и список холдеров —
-не агрегаты, а сами транзакции. Ищет то, что в средних теряется:
-координированные покупки с одинаковыми суммами и интервалами меньше пяти
-секунд, wash-трейдинг, дробление позиции создателем перед сбросом, покупки
-пачкой в первую секунду жизни токена. Возвращает четыре булевых флага и
-долю органических покупателей. При недостатке данных обязан ставить флаг,
-а не оправдывать токен.
+**Auditor** (`grok-4-fast`) gets the raw trade stream and the holder list —
+not aggregates, but the transactions themselves. It looks for what gets
+lost in averages: coordinated buys with identical amounts and intervals
+under five seconds, wash trading, the creator splitting a position before
+dumping, batch buys in the first second of the token's life. It returns
+four boolean flags and the share of organic buyers. When data is
+insufficient it must raise a flag, not give the token the benefit of the
+doubt.
 
-**Нарратив** (`grok-4-fast`) не смотрит в ончейн вообще. Его вход — имя,
-тикер, описание, картинка и ссылки; его вопрос — разлетится ли это.
-Четыре независимые оценки от 0 до 1: попадание в тренд, виральность,
-признаки живого сообщества, своевременность запуска. Клоны вчерашнего
-хайпа оцениваются строго, отсутствие данных — низкая оценка, а не средняя.
+**Narrative** (`grok-4-fast`) does not look at on-chain data at all. Its
+input is the name, ticker, description, image, and links; its question is
+whether this will spread. Four independent scores from 0 to 1: fit with
+the trend, virality, signs of a living community, timing of the launch.
+Clones of yesterday's hype are scored strictly; missing data is a low
+score, not a medium one.
 
-**Тайминг** (`grok-4-fast`, кэш 15 минут) оценивает не токен, а фон:
-настроение по Solana, идёт ли мем-сезон, объёмы на pump.fun, аномалии вроде
-сбоя сети или каскадного слива. Ответ одинаков для всех токенов в пределах
-окна, поэтому кэшируется — иначе каждый лонч оплачивал бы один и тот же
-вывод. Кэш защищён локом: пачка одновременных токенов не устраивает три
-параллельных одинаковых запроса. Сбой не кэшируется.
+**Timing** (`grok-4-fast`, 15-minute cache) scores the backdrop, not the
+token: sentiment on Solana, whether a meme season is on, volumes on
+pump.fun, anomalies such as a network outage or a cascade dump. The answer
+is the same for every token inside the window, so it is cached — otherwise
+every launch would pay for the same conclusion. The cache is lock-protected:
+a burst of simultaneous tokens does not fire three identical parallel
+requests. A failure is not cached.
 
-**Чекер** (`grok-4`, модель посильнее) — последний рубеж перед деньгами и
-единственный агент, которому запрещено искать причины купить. Он получает
-выводы всех предыдущих и ищет противоречия между ними: высокий мем-потенциал
-при низкой органике, хорошая кривая при концентрации у топ-5, сильный
-скоринг, собранный одним компонентом при провале остальных. `approve: false`
-— ожидаемый исход, а не сбой.
+**Checker** (`grok-4`, the stronger model) is the last line before money
+and the only agent forbidden from looking for reasons to buy. It receives
+every prior conclusion and looks for contradictions among them: high meme
+potential with low organic share, a healthy curve with concentration in
+the top-5, a strong score assembled from one component while the others
+fail. `approve: false` is the expected outcome, not a failure.
 
-### Общее правило для всех четырёх
+### Shared rule for all four
 
-Вся механика вызова — в `agents/base.py`: сборка запроса, `temperature=0`,
-строгий разбор JSON, ретраи с экспоненциальной задержкой, таймаут 30 секунд.
-Промпты живут константами в модулях агентов и заканчиваются требованием
-ответить голым JSON без markdown-обёртки.
+All call mechanics live in `agents/base.py`: request assembly,
+`temperature=0`, strict JSON parsing, retries with exponential backoff,
+30-second timeout. Prompts live as constants in the agent modules and end
+with a requirement to answer in bare JSON with no markdown wrapper.
 
-**При любой ошибке агент возвращает максимально пессимистичный результат,
-а не пустой.** Таймаут, пятисотка, кривой JSON, ответ не по схеме — для
-аудитора это все флаги риска в `true` и нулевая органика, для чекера это
-`approve: false`. Сломавшаяся проверка равна отказу, никогда — молчаливому
-пропуску. Это покрыто тестами (`tests/test_agents.py`).
+**On any error the agent returns the most pessimistic result, not an
+empty one.** A timeout, a 500, malformed JSON, a response that does not
+match the schema — for the auditor that means every risk flag is `true`
+and organic share is zero; for the checker that means `approve: false`.
+A broken check equals a reject, never a silent pass. This is covered by
+tests (`tests/test_agents.py`).
 
-## Конфиг
+## Config
 
-Всё в `config.yaml`, шаблон — `config.example.yaml`. **`config.yaml` лежит в
-`.gitignore`**, в репозиторий попадает только шаблон с плейсхолдерами.
+Everything lives in `config.yaml`; the template is `config.example.yaml`.
+**`config.yaml` is in `.gitignore`**; only the template with placeholders
+reaches the repository.
 
-| секция | что задаёт |
+| section | what it sets |
 |---|---|
-| `mode` | `dry-run` или `live` |
-| `grok` | ключ, `fast_model` для трёх быстрых агентов, `checker_model` для чекера, таймаут, ретраи |
-| `solana` | RPC, приватный ключ кошелька, Jito: адрес block-engine и размер чаевых |
-| `data` | ключ провайдера, REST- и WS-адреса |
-| `risk` | пять лимитов: потолок сделки, дневной убыток, сделок в день, открытых позиций, стоп-лосс |
-| `filter` | пороги базового фильтра и `min_total_score` |
-| `scoring` | веса четырёх компонентов и время жизни кэша тайминга |
-| `logging` | путь к JSONL и уровень |
+| `mode` | `dry-run` or `live` |
+| `grok` | key, `fast_model` for the three fast agents, `checker_model` for the checker, timeout, retries |
+| `solana` | RPC, wallet private key, Jito: block-engine address and tip size |
+| `data` | provider key, REST and WS addresses |
+| `risk` | five limits: per-trade cap, daily loss, trades per day, open positions, stop-loss |
+| `filter` | base-filter thresholds and `min_total_score` |
+| `scoring` | weights of the four components and the timing cache TTL |
+| `logging` | JSONL path and level |
 
-Веса скоринга нормализуются: если написать 0.5/0.5/0.5/0.5, пропорции
-сохранятся, а итог останется в диапазоне 0..1.
+Scoring weights are normalized: if you write 0.5/0.5/0.5/0.5, the
+proportions are kept and the result stays in the 0..1 range.
 
-### Риск-менеджмент
+### Risk management
 
-Размер позиции пропорционален скорингу, но ограничен дважды: потолком
-`max_sol_per_trade` и 30% остатка дневного лимита убытка. То есть по мере
-того, как день идёт в минус, ставки автоматически уменьшаются, а по
-достижении `daily_loss_limit_sol` пайплайн останавливается до следующих
-суток UTC.
+Position size is proportional to the score, but capped twice: by the
+`max_sol_per_trade` ceiling and by 30% of the remaining daily loss budget.
+So as the day goes into the red, stakes shrink automatically, and once
+`daily_loss_limit_sol` is hit the pipeline stops until the next UTC day.
 
-### Память о создателях
+### Creator memory
 
-Пайплайн разбирает каждый лонч с чистого листа, поэтому один и тот же
-деплойер может слить нас трижды подряд — и каждый раз он будет «новым».
-Аудитор его тоже не узнает: он видит один токен, а не историю адреса.
+The pipeline reviews every launch from a clean slate, so the same deployer
+can dump us three times in a row — and each time they would be "new".
+The auditor would not recognize them either: it sees one token, not the
+address's history.
 
-`src/reputation.py` ведёт книгу адресов по **собственным закрытым
-сделкам** — это не список из интернета и не эвристика, а факт из своего же
-лога. Закрытие хуже `rug_loss_pct` засчитывается адресу как слив; после
-`block_creator_after_rugs` сливов его токены отсекаются на входе, до
-единого запроса к Grok. Отдельно работает `one_position_per_creator`: два
-токена одного деплойера — это одна ставка, а не две, сливают их обычно
-вместе.
+`src/reputation.py` keeps a book of addresses from **our own closed
+trades** — this is not a list from the internet and not a heuristic, but
+a fact from our own log. A close worse than
+`rug_loss_pct` counts as a rug for that address; after
+`block_creator_after_rugs` rugs, their tokens are cut at the door, before
+a single Grok call. Separately, `one_position_per_creator` applies: two
+tokens from the same deployer are one bet, not two — they usually dump
+together.
 
-Книга живёт в `state/creators.json` и переживает рестарт. Чистые адреса
-забываются через `forget_creators_after_days`, адреса со сливами — никогда:
-они и есть её ценность.
+The book lives in `state/creators.json` and survives a restart. Clean
+addresses are forgotten after `forget_creators_after_days`; addresses with
+rugs never are: that is the book's value.
 
-### Выходы из позиции
+### Position exits
 
-Открытые позиции ведёт отдельная фоновая задача, опрашивая цены каждые
-`stop_loss_poll_seconds`. Правил четыре, и порядок между ними — это
-порядок приоритета:
+Open positions are driven by a separate background task that polls prices
+every `stop_loss_poll_seconds`. There are four rules, and the order among
+them is the priority order:
 
-| правило | когда срабатывает | зачем |
+| rule | when it fires | why |
 |---|---|---|
-| `stop_loss` | цена ниже входа на `stop_loss_pct` | ограничить убыток |
-| `take_profit` | цена выше входа на `take_profit_pct` | забрать прибыль |
-| `trailing_stop` | откат от пика на `trailing_stop_pct` | не отдать обратно то, что уже выросло |
-| `max_hold` | в позиции дольше `max_hold_seconds` | мемкоин, который час не поехал, не поедет |
+| `stop_loss` | price is below entry by `stop_loss_pct` | cap the loss |
+| `take_profit` | price is above entry by `take_profit_pct` | take the profit |
+| `trailing_stop` | pullback from the peak by `trailing_stop_pct` | do not give back what already grew |
+| `max_hold` | in the position longer than `max_hold_seconds` | a memecoin that did not move in an hour will not move |
 
-Трейлинг считается только выше цены входа: ниже за позицию отвечает
-стоп-лосс, иначе два правила спорили бы за одну и ту же просадку. Пик цены
-хранится в состоянии и переживает рестарт — иначе после перезапуска
-трейлинг начинался бы заново от текущей цены. Ноль в любом из трёх новых
-параметров выключает соответствующее правило; со `stop_loss_pct` в одиночку
-поведение ровно то же, что было раньше.
+Trailing is computed only above the entry price: below it, the stop-loss
+owns the position, otherwise the two rules would fight over the same
+drawdown. The price peak is stored in state and survives a restart —
+otherwise after a restart the trail would start over from the current
+price. Zero in any of the three newer parameters turns that rule off;
+with `stop_loss_pct` alone the behavior is exactly what it used to be.
 
-Причина выхода попадает в `close.reason` в логе и в счётчик
-`exit_<причина>` в метриках — по ним видно, чем на самом деле кончаются
-позиции: забранной прибылью, откатом или таймером.
+The exit reason lands in `close.reason` in the log and in the
+`exit_<reason>` counter in metrics — from those you can see how positions
+actually end: taken profit, pullback, or timer.
 
-### Режим dry-run
+### Dry-run mode
 
-По умолчанию `mode: dry-run`. Пайплайн проходит все ступени, реально
-вызывает агентов и считает скоринг, но вместо транзакции пишет запись с
-`tx_hash: "dry_run"`. Цены при этом настоящие, поэтому стоп-лосс и PnL в
-dry-run считаются по рынку.
+Default is `mode: dry-run`. The pipeline walks every stage, actually
+calls the agents, and computes the score, but instead of a transaction
+it writes a record with `tx_hash: "dry_run"`. Prices are real, so
+stop-loss and PnL in dry-run are computed from the market.
 
-Переключение в live — только явной правкой конфига, и при старте пайплайн
-печатает предупреждение и требует флаг:
+Switching to live is only by an explicit config edit, and at startup the
+pipeline prints a warning and requires a flag:
 
 ```bash
 python -m src.pipeline --config config.yaml --i-understand-the-risk
 ```
 
-Без флага запуск в `live` отклоняется.
+Without the flag a `live` start is rejected.
 
-## Честная экономика сделки
+## Honest trade economics
 
-Раньше пайплайн считал, что покупает по цене котировки. Это неправда
-сразу трижды: площадка берёт комиссию, покупка двигает цену против
-покупателя, и на выходе всё повторяется в обратную сторону. На кривой с
-несколькими десятками SOL резерва заявка на полсола — заметная доля
-ликвидности, а не пылинка.
+The pipeline used to assume it buys at the quoted price. That is a lie
+three times over: the venue takes a fee, the buy moves the price against
+the buyer, and on the way out the same thing happens in reverse. On a
+curve with a few dozen SOL of reserve, a half-SOL order is a noticeable
+share of liquidity, not a speck of dust.
 
-`src/curve.py` считает по постоянному произведению виртуальных резервов:
+`src/curve.py` computes from the constant product of virtual reserves:
 
-| что | как считается |
+| what | how it is computed |
 |---|---|
-| цена входа | средняя цена исполнения заявки, а не спот |
-| комиссия | `market.trade_fee_pct` с каждой стороны |
-| влияние на цену | точная формула, не подбор: `(1+s/S)/(1−f)` |
-| потолок заявки | максимум SOL, укладывающийся в `max_price_impact_pct` |
-| стоимость круга | вход плюс немедленный выход — порог осмысленности сделки |
+| entry price | average fill price of the order, not the spot |
+| fee | `market.trade_fee_pct` on each side |
+| price impact | exact formula, not a fit: `(1+s/S)/(1−f)` |
+| order ceiling | max SOL that fits inside `max_price_impact_pct` |
+| round-trip cost | entry plus an immediate exit — the threshold of whether a trade makes sense |
 
-Практический смысл в одной строке: **по dry-run принимается решение
-включать live**, и если dry-run покупает по котировке, это решение
-принимается по прибыли, которой не существует.
+The practical point in one line: **the dry-run is what decides whether to
+turn live on**, and if dry-run buys at the quote, that decision is made
+on a profit that does not exist.
 
-Отсюда же три отсечки, которых раньше не было: слишком тонкая кривая
-(`min_curve_liquidity_sol` — из неё не выйти, своя же продажа обвалит
-цену), слишком дорогой вход-выход (`max_round_trip_cost_pct` — движение,
-ради которого затевалась сделка, съедается издержками) и потолок размера
-позиции по ликвидности (заявка, двигающая цену на проценты, покупает сама
-у себя).
+The same source gives three cutoffs that did not exist before: a curve
+that is too thin (`min_curve_liquidity_sol` — you cannot get out, your
+own sell will crash the price), a round-trip that is too expensive
+(`max_round_trip_cost_pct` — the move the trade was for is eaten by
+costs), and a position-size ceiling from liquidity (an order that moves
+the price by percents is buying from itself).
 
-Посмотреть числа на свежей кривой: `grokbot curve`.
+To see the numbers on a fresh curve: `grokbot curve`.
 
-## Работа без присмотра
+## Unattended operation
 
-Пайплайн рассчитан на то, чтобы жить сутками. Что для этого сделано.
+The pipeline is built to run for days. Here is what that required.
 
-**Состояние переживает рестарт.** Открытые позиции, счётчики дня и расход
-Grok лежат в `state/pipeline.json` и поднимаются на старте. Без этого
-перезапуск обнулял бы дневной лимит убытка и защиту от повторной покупки
-того же токена — оба ограничителя считались бы заново. Файл пишется
-атомарно (временный файл плюс `os.replace`), так что на диске никогда не
-лежит наполовину записанный JSON. Позиции восстанавливаются всегда,
-счётчики дня — только если файл сегодняшний.
+**State survives a restart.** Open positions, daily counters, and Grok
+spend live in `state/pipeline.json` and are loaded at startup. Without
+this a restart would reset the daily loss limit and the guard against
+buying the same token again — both limiters would start from scratch.
+The file is written atomically (a temp file plus `os.replace`), so a
+half-written JSON never sits on disk. Positions are always restored;
+daily counters only if the file is from today.
 
-**Остановка аккуратная.** SIGTERM и SIGINT не рвут работу: пайплайн
-перестаёт принимать новые токены, даёт доделаться тем, что уже в разборе
-(до `shutdown_grace_seconds`), сохраняет состояние и закрывает соединения.
-Позиции при этом не распродаются — и в лог пишется предупреждение, что
-стоп-лосс по ним не работает, пока процесс не поднят снова.
+**Shutdown is clean.** SIGTERM and SIGINT do not tear work apart: the
+pipeline stops accepting new tokens, lets whatever is already in review
+finish (up to `shutdown_grace_seconds`), saves state, and closes
+connections. Positions are not sold off — and a warning is written to
+the log that stop-loss on them does not work until the process is up
+again.
 
-**Расход Grok ограничен тремя разными способами**, потому что отказы у них
-разные: ведро токенов не даёт долбить API чаще договорённого, дневной
-бюджет вызовов не даёт всплеску лончей съесть месячные деньги за вечер, а
-предохранитель размыкается после `breaker_failures` сбоев подряд и
-перестаёт звонить туда, где всё равно не отвечают. Пока цепь разомкнута,
-агенты отдают пессимистичный результат — то есть пайплайн не покупает.
+**Grok spend is limited in three different ways**, because their failure
+modes differ: a token bucket stops hammering the API faster than agreed,
+a daily call budget stops a launch spike from eating a month of money in
+an evening, and a circuit breaker opens after `breaker_failures`
+consecutive failures and stops calling a place that is not answering
+anyway. While the circuit is open, agents return the pessimistic result
+— so the pipeline does not buy.
 
-**О важном сообщается наружу.** При заданном `alerts.webhook_url` пайплайн
-шлёт события в webhook: запуск и остановка, покупка, закрытие позиции,
-слив создателя, разомкнутая цепь, выбранный дневной лимит, вставший поток
-лончей. Состояния сообщаются на переходе, а не на каждом тике, поток
-ограничен по частоте, а любая ошибка отправки остаётся в логе и торговлю
-не трогает. Выключено по умолчанию.
+**Important events are reported outward.** When `alerts.webhook_url` is
+set, the pipeline sends events to the webhook: start and stop, a buy, a
+position close, a creator rug, an open circuit, the daily limit hit, a
+stalled launch stream. States are reported on transition, not on every
+tick; the stream is rate-limited; and any send error stays in the log
+and does not touch trading. Off by default.
 
-**Пауза после серии убытков.** Дневной лимит ловит медленное истечение
-денег, но не быструю серию: три стопа подряд обычно означают враждебный
-режим, а не невезение. `cooldown_after_losses` останавливает новые покупки
-на `cooldown_minutes`, прибыльная сделка сбрасывает счётчик. Пауза
-переживает рестарт — иначе её можно было бы «вылечить» перезапуском.
+**A pause after a losing streak.** The daily limit catches a slow bleed,
+but not a fast series: three stops in a row usually mean a hostile
+regime, not bad luck. `cooldown_after_losses` stops new buys for
+`cooldown_minutes`; a profitable trade resets the counter. The pause
+survives a restart — otherwise you could "cure" it by restarting.
 
-**Один бот на одно состояние.** Два процесса на одном файле состояния —
-это два бота на одном кошельке: они перезапишут позиции друг друга, дважды
-выберут дневной лимит и купят один и тот же токен. Замок с PID не даёт
-второму стартовать; замок от мёртвого процесса перехватывается, потому что
-падение не должно оставлять систему незапускаемой.
+**One bot per one state.** Two processes on the same state file are two
+bots on the same wallet: they will overwrite each other's positions,
+hit the daily limit twice, and buy the same token. A PID lock keeps the
+second from starting; a lock from a dead process is taken over, because
+a crash must not leave the system unstartable.
 
-**Экспозиция ограничена целиком, а не по сделке.** Три позиции по потолку
-— это одна большая ставка, а не три маленькие: мемкоины валятся вместе.
-`risk.max_total_exposure_sol` ограничивает сумму в рынке; размер новой
-сделки режется свободным остатком, а частичная фиксация его возвращает.
+**Exposure is limited in total, not per trade.** Three positions at the
+cap are one large bet, not three small ones: memecoins fall together.
+`risk.max_total_exposure_sol` caps the sum in the market; the size of a
+new trade is cut by the free remainder, and a partial take-profit
+returns it.
 
-**Переезд на Raydium не оставляет позицию слепой.** Когда кривая
-заканчивается, вся математика этого проекта к токену больше неприменима:
-цена перестаёт приходить, и правила выхода ослепли бы ровно в тот момент,
-когда позиция в лучшем плюсе. Это отдельная причина выхода сразу после
-стоп-лосса.
+**A move to Raydium does not leave the position blind.** When the curve
+ends, all of this project's math no longer applies to the token: price
+stops arriving, and the exit rules would go blind at the exact moment
+the position is at its best profit. That is a separate exit reason,
+immediately after stop-loss.
 
-**След намерения купить.** Запись `intent` пишется до отправки заявки. Если
-процесс умрёт между исполнением и учётом, на диске останется намерение без
-покупки — на следующем старте это выводится с требованием проверить
-кошелёк, а не обнаруживается через неделю по лишним токенам.
+**A buy-intent trail.** An `intent` record is written before the order is
+sent. If the process dies between execution and bookkeeping, the disk
+keeps an intent without a buy — on the next start this is printed with
+a demand to check the wallet, not discovered a week later via leftover
+tokens.
 
-**Живость видна снаружи.** При `ops.health_port` больше нуля поднимается
-`GET /healthz` (JSON, 200 при `ok` и 503 при `degraded` — можно вешать
-рестарт-политику) и `GET /metrics` в формате Prometheus. Раз в
-`heartbeat_seconds` то же самое уходит строкой в лог. Веб-фреймворка для
-этого не заводили: две ручки на `asyncio.start_server`.
+**Liveness is visible from outside.** When `ops.health_port` is greater
+than zero, `GET /healthz` comes up (JSON, 200 on `ok` and 503 on
+`degraded` — you can hang a restart policy on it) and `GET /metrics` in
+Prometheus format. Every `heartbeat_seconds` the same thing goes to the
+log as a line. No web framework was introduced for this: two handlers
+on `asyncio.start_server`.
 
-**Ничего не растёт без конца.** JSONL поворачивается по размеру
-(`logging.max_bytes`, `backups`), буфер монитора и список уже виденных
-минтов ограничены по длине.
+**Nothing grows without bound.** JSONL rotates by size
+(`logging.max_bytes`, `backups`); the monitor buffer and the list of
+already-seen mints are length-capped.
 
-**Секреты не утекают в логи.** Ключи — `SecretStr`: их нет ни в `repr`, ни
-в дампе модели, ни в traceback. `--check` печатает конфиг с
-замаскированными ключами. Образ не содержит секретов вообще: они приходят
-через `GROKBOT_*`, конфиг монтируется томом.
+**Secrets do not leak into logs.** Keys are `SecretStr`: they are in
+neither `repr`, nor the model dump, nor the traceback. `--check` prints
+the config with keys masked. The image contains no secrets at all: they
+arrive via `GROKBOT_*`; the config is mounted as a volume.
 
-**Плохой конфиг не стартует.** Нулевой лимит сделки, порог вне диапазона,
-`live` без ключа кошелька, оставшийся плейсхолдер вместо ключа Grok —
-всё это ошибки запуска со списком проблем, а не сюрприз через час
-торговли. Отдельно печатаются предупреждения, которые запуск не блокируют.
+**A bad config does not start.** A zero trade limit, a threshold out of
+range, `live` without a wallet key, a leftover placeholder instead of a
+Grok key — all of these are startup errors with a list of problems, not
+a surprise an hour into trading. Warnings that do not block startup are
+printed separately.
 
-Что смотреть в работе, что означает каждая жалоба и как её чинить —
-[RUNBOOK.md](RUNBOOK.md).
+What to watch in production, what each complaint means, and how to fix
+it — [RUNBOOK.md](RUNBOOK.md).
 
-### Переменные окружения
+### Environment variables
 
-| переменная | что задаёт |
+| variable | what it sets |
 |---|---|
-| `GROKBOT_GROK_API_KEY` | ключ xAI |
-| `GROKBOT_DATA_API_KEY` | ключ провайдера данных |
-| `GROKBOT_WALLET_PRIVATE_KEY` | приватный ключ кошелька (нужен только в live) |
-| `GROKBOT_MODE` | `dry-run` или `live` |
-| `GROKBOT_RPC_URL` | RPC Solana |
-| `GROKBOT_LOG_PATH`, `GROKBOT_LOG_LEVEL` | путь и уровень лога |
-| `GROKBOT_STATE_PATH` | файл состояния |
-| `GROKBOT_HEALTH_PORT` | порт health-эндпоинта, 0 — выключить |
-| `GROKBOT_ALERT_WEBHOOK` | webhook для уведомлений (в нём обычно токен) |
+| `GROKBOT_GROK_API_KEY` | xAI key |
+| `GROKBOT_DATA_API_KEY` | data-provider key |
+| `GROKBOT_WALLET_PRIVATE_KEY` | wallet private key (needed only in live) |
+| `GROKBOT_MODE` | `dry-run` or `live` |
+| `GROKBOT_RPC_URL` | Solana RPC |
+| `GROKBOT_LOG_PATH`, `GROKBOT_LOG_LEVEL` | log path and level |
+| `GROKBOT_STATE_PATH` | state file |
+| `GROKBOT_HEALTH_PORT` | health-endpoint port, 0 to disable |
+| `GROKBOT_ALERT_WEBHOOK` | webhook for notifications (usually contains a token) |
 
-Пустое значение переменной не затирает то, что в файле: в compose это
-частая ошибка.
+An empty variable value does not wipe what is in the file: that is a
+common compose mistake.
 
 ## Executor
 
-`src/executor.py` — единственное место, оставленное незаконченным намеренно.
-`DryRunExecutor` работает полностью; `LiveExecutor.buy` и `.sell` поднимают
-`NotImplementedError`, а рядом лежит пошаговый список того, что нужно
-дописать: загрузка Keypair, аккаунты бондинговой кривой, ATA покупателя,
-расчёт `max_sol_cost` со проскальзыванием, инструкция программы pump.fun,
-ComputeBudget, отправка бандла в Jito с чаевыми, ожидание подтверждения.
+`src/executor.py` is the only place left unfinished on purpose.
+`DryRunExecutor` works fully; `LiveExecutor.buy` and `.sell` raise
+`NotImplementedError`, and next to them sits a step-by-step list of what
+still needs to be written: Keypair load, bonding-curve accounts, buyer
+ATA, `max_sol_cost` with slippage, the pump.fun program instruction,
+ComputeBudget, sending a bundle to Jito with a tip, waiting for
+confirmation.
 
-Чтение цены с кривой общее для обоих режимов и работает.
+Reading the price from the curve is shared by both modes and works.
 
-## Логирование
+## Logging
 
-JSONL, одна запись на строку, три типа:
+JSONL, one record per line, three types:
 
-- `buy` — полный контекст решения: разложенный скоринг, ответы всех четырёх
-  агентов, метрики, цена входа, размер, `tx_hash`;
-- `skip` — ступень, причина и деталь (например, какой компонент скоринга
-  оказался слабее всех);
-- `close` — цена выхода, PnL в SOL и процентах, время удержания, причина.
+- `buy` — the full decision context: decomposed score, replies from all
+  four agents, metrics, entry price, size, `tx_hash`;
+- `skip` — stage, reason, and detail (for example, which scoring
+  component was the weakest);
+- `close` — exit price, PnL in SOL and percent, hold time, reason.
 
-`scripts/replay.py` собирает по логу сводку: сколько рассмотрено и куплено,
-разбивка причин отсева по ступеням, гистограмма скорингов и средние по
-компонентам, PnL, доля прибыльных, среднее время удержания.
-`scripts/dashboard.py` показывает текущее состояние: открытые позиции,
-отсев за сегодня, последние события; с `--watch N` обновляется сам.
+`scripts/replay.py` builds a summary from the log: how many were
+reviewed and bought, skip-reason breakdown by stage, score histogram
+and component averages, PnL, win rate, average hold time.
+`scripts/dashboard.py` shows the current state: open positions, today's
+funnel, latest events; with `--watch N` it refreshes itself.
 
-`scripts/tune.py` пересчитывает скоринг по логу с другими весами и порогом
-— компоненты сохранены в каждой записи, поэтому агентов заново вызывать не
-нужно. Показывает, как порог меняет число кандидатов, и какие наборы весов
-сохранили бы больше прибыли на уже случившихся сделках.
+`scripts/tune.py` recomputes scoring from the log with different weights
+and a different threshold — the components are stored in every record,
+so the agents do not need to be called again. It shows how the threshold
+changes the number of candidates, and which weight sets would have kept
+more profit on trades that already happened.
 
-Ограничение, которое скрипт печатает сам: чем кончился бы токен, отсеянный
-порогом, лог не знает и знать не может. Таблица описывает уже случившееся,
-а не будущий доход, и на двух десятках сделок это подгонка под шум, а не
-настройка. Отсюда предупреждение при выборке меньше 30 закрытых сделок.
+A limitation the script prints itself: what would have become of a token
+filtered by the threshold, the log does not know and cannot know. The
+table describes what already happened, not future income, and on a couple
+of dozen trades this is fitting to noise, not tuning. Hence the warning
+when the sample is under 30 closed trades.
 
-## Предполётная проверка
+## Pre-flight check
 
 ```bash
-grokbot doctor              # или: make doctor
-grokbot doctor --offline    # без сетевых проверок
-grokbot doctor --json       # для мониторинга
+grokbot doctor              # or: make doctor
+grokbot doctor --offline    # without network checks
+grokbot doctor --json       # for monitoring
 ```
 
-Половина неудачных запусков — не про логику, а про окружение: ключ
-просрочен, провайдер отвечает 403, сокет не открывается из этой сети,
-каталог состояния не пишется. Это выясняется через час молчаливой работы
-вхолостую, а могло бы за десять секунд до запуска.
+Half of failed starts are not about logic, but about the environment: a
+key is expired, the provider returns 403, the socket does not open from
+this network, the state directory is not writable. That is discovered
+after an hour of silent idle work, and could have been found in ten
+seconds before start.
 
-Проверяются: конфиг, права на каталоги лога и состояния, свободное место,
-константы кривой, ключ Grok (списком моделей — **модель не вызывается,
-токены не тратятся**), провайдер данных, поток лончей в сокете, RPC
-Solana и готовность режима live. Тихая ночь на сокете отличается от
-сломанного сокета: первое — замечание, второе — отказ.
+Checked: config, permissions on the log and state directories, free
+space, curve constants, the Grok key (via the model list — **the model
+is not called, tokens are not spent**), the data provider, the launch
+stream on the socket, Solana RPC, and live-mode readiness. A quiet night
+on the socket is different from a broken socket: the first is a note,
+the second is a reject.
 
-## Тесты и проверки
+## Tests and checks
 
 ```bash
-make check      # ruff + mypy + pytest, то же самое гоняет CI
+make check      # ruff + mypy + pytest, the same thing CI runs
 make test
 make cov
 ```
 
-Покрыто: базовый фильтр и буфер монитора, скоринг-матрица на граничных
-значениях и нормализация весов, все пять риск-лимитов, уменьшение позиции у
-границы дневного бюджета, сброс суток, стоп-лосс, агенты на замоканном
-HTTP — включая кривой JSON, таймаут, 500 и ответ не по схеме, — валидация
-конфига и маскировка секретов, состояние после рестарта, ограничители
-расхода Grok, health-эндпоинт, ротация лога и сквозной прогон пайплайна в
-dry-run. Ни один тест не ходит в сеть, кроме health-эндпоинта на 127.0.0.1.
+Covered: the base filter and the monitor buffer, the scoring matrix at
+boundary values and weight normalization, all five risk limits, position
+shrink near the daily-budget edge, day rollover, stop-loss, agents on
+mocked HTTP — including malformed JSON, a timeout, a 500, and a
+schema-invalid reply — config validation and secret masking, state after
+a restart, Grok-spend limiters, the health endpoint, log rotation, and
+an end-to-end pipeline run in dry-run. No test goes to the network,
+except the health endpoint on 127.0.0.1.
 
-Отдельно стоят два вида тестов, которых обычно не бывает:
+Two kinds of tests that usually do not exist stand on their own:
 
-**Инварианты кривой** (`tests/test_curve.py`) — не «на таких числах
-получилось столько», а тождества постоянного произведения: произведение
-резервов сохраняется, круг без комиссии бесплатен, круг с комиссией стоит
-ровно `1−(1−f)²`, дробление заявки даёт ровно то же, что одна большая,
-потолок влияния совпадает с целью до девятого знака.
+**Curve invariants** (`tests/test_curve.py`) — not "on these numbers we
+got this much", but constant-product identities: the product of reserves
+is preserved, a round-trip without a fee is free, a round-trip with a
+fee costs exactly `1−(1−f)²`, splitting an order gives exactly the same
+as one large one, the impact ceiling matches the target to the ninth
+digit.
 
-**Симуляция торгового дня** (`tests/test_simulation.py`) — десятки токенов
-с движущимися ценами через настоящий пайплайн, с проверкой после каждого
-шага: ни один потолок не превышен, сумма PnL из лога равна учтённой в
-риск-менеджере, частичные выходы не создают и не теряют SOL. Такие
-расхождения не видны на одной сделке — они копятся за день.
+**Trading-day simulation** (`tests/test_simulation.py`) — dozens of
+tokens with moving prices through the real pipeline, with a check after
+every step: no ceiling is exceeded, the sum of PnL from the log equals
+what the risk manager booked, partial exits neither create nor lose SOL.
+Such discrepancies are invisible on a single trade — they accumulate
+over a day.
 
-CI гоняет линтер, типы и тесты на Python 3.11, 3.12 и 3.13, собирает образ
-и отдельно проверяет, что `config.example.yaml` с плейсхолдерами запуск не
-проходит.
+CI runs the linter, types, and tests on Python 3.11, 3.12, and 3.13,
+builds the image, and separately checks that `config.example.yaml` with
+placeholders does not start.
 
-## Дисклеймер
+## Disclaimer
 
-Это исследовательский код, а не торговый продукт и не финансовый совет.
+This is research code, not a trading product and not financial advice.
 
-Мемкоины на бондинговой кривой обесцениваются полностью, и это обычный
-исход, а не редкий. Значительная часть лончей pump.fun — организованные
-раги; часть остального ими становится. Ни аудит кошельков, ни
-адверсариальная проверка не отличают надёжно подготовленный слив от
-органического роста — они лишь понижают долю очевидно плохих входов.
+Memecoins on a bonding curve go to zero completely, and that is the
+usual outcome, not a rare one. A large share of pump.fun launches are
+organized rugs; some of the rest become them. Neither a wallet audit nor
+an adversarial check reliably tells a prepared dump from organic growth
+— they only lower the share of obviously bad entries.
 
-Пять лимитов в конфиге ограничивают скорость потери денег, а не вероятность
-их потерять. Автоматическая торговля на своём ключе означает, что ошибка в
-коде, сбой провайдера данных или неудачный промпт стоят ровно столько,
-сколько лежит в кошельке.
+The five limits in the config cap the speed of losing money, not the
+probability of losing it. Automated trading on your own key means that a
+bug in the code, a data-provider outage, or a bad prompt costs exactly
+as much as sits in the wallet.
 
-Работайте в `dry-run`, пока сами не прочитали каждую ступень. Live-часть не
-дописана намеренно: дописывая её, вы принимаете ответственность за то, что
-она делает с вашими средствами.
+Work in `dry-run` until you have read every stage yourself. The live
+part is unfinished on purpose: by finishing it, you accept
+responsibility for what it does with your funds.
