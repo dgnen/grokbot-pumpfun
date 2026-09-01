@@ -115,7 +115,7 @@ hang a restart policy on that. Fields:
 | `open_positions` | open positions | cannot exceed `max_open_positions` |
 | `in_flight` | tokens in review | stuck at the ceiling — hit the Grok limit |
 
-The `жив: ...` line in the log every `heartbeat_seconds` is the same
+The `alive: ...` line in the log every `heartbeat_seconds` is the same
 thing, but in the journal, so you can reconstruct history from it.
 
 ## Notifications
@@ -136,7 +136,7 @@ in `/healthz` is exactly how many notifications did not go out.
 
 ## Incidents
 
-### `breaker: open`, log says «цепь Grok разомкнута»
+### `breaker: open`, log says "Grok circuit opened"
 
 That many consecutive calls failed. The pipeline stopped calling Grok
 for `breaker_cooldown_seconds` and **does not buy for that entire window** —
@@ -196,7 +196,7 @@ rules. The pause ends on its own. If it trips several times a day —
 the problem is not the pause, it is selection: look at the funnel and
 `tune`.
 
-### «состояние занято другим процессом» (state held by another process)
+### "state is held by another process"
 
 A second bot was started on the same state file — it will refuse to
 start. That is by design: two processes on one wallet will overwrite
@@ -209,7 +209,7 @@ dead process is taken over automatically.
 The daily loss limit is spent. Nothing to fix; the counters reset at
 midnight UTC. Open positions keep being driven by stop-loss.
 
-### «состояние не читается — отложено в .corrupt» (state unreadable)
+### "state unreadable — set aside as .corrupt"
 
 The state file was corrupted (usually the disk filled up mid-write).
 The pipeline started from a clean slate: **it does not know about open

@@ -512,7 +512,7 @@ class Pipeline:
             "open_positions": self.risk.open_count,
             "trades_today": self.risk.trades_today,
             "pnl_today_sol": round(self.risk.realized_pnl_sol, 4),
-            "thin_data": self.pulse.is_thin(),
+            "sparse_data": self.pulse.is_thin(),
         })
         return data
 

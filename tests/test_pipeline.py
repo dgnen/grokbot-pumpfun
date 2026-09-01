@@ -827,7 +827,7 @@ async def test_timing_agent_gets_measured_data(config):
     assert observations["launches_in_window"] >= 10
     assert observations["median_sol_in_curve"] > 30
     assert "utc_hour" in observations
-    assert observations["thin_data"] is False
+    assert observations["sparse_data"] is False
 
 
 async def test_pulse_counts_launches_and_outcomes(config):

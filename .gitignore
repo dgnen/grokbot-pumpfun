@@ -1,7 +1,7 @@
-# локальный конфиг с ключами — в репозиторий не попадает
+# local config with keys — does not reach the repository
 config.yaml
 
-# логи пайплайна
+# pipeline logs
 *.jsonl
 logs/
 

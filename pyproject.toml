@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "grokbot-pumpfun"
 version = "0.3.0"
-description = "Пайплайн мемкоин-трейдинга на pump.fun с пятью агентами на Grok API"
+description = "pump.fun memecoin trading pipeline with Grok agents"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -50,9 +50,6 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "ASYNC", "C4", "SIM", "RUF"]
 ignore = [
-    "RUF001",  # кириллица в строках — здесь это язык проекта, а не опечатка
-    "RUF002",
-    "RUF003",
     "B008",
 ]
 

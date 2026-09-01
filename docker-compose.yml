@@ -1,5 +1,5 @@
-# Запуск:
-#   cp .env.example .env && $EDITOR .env       # ключи живут здесь
+# Startup:
+#   cp .env.example .env && $EDITOR .env       # keys live here
 #   mkdir -p config && cp config.example.yaml config/config.yaml
 #   docker compose up -d && docker compose logs -f
 
@@ -9,16 +9,16 @@ services:
     image: grokbot-pumpfun:latest
     container_name: grokbot-pumpfun
     restart: unless-stopped
-    stop_grace_period: 45s        # больше, чем ops.shutdown_grace_seconds
+    stop_grace_period: 45s        # larger than ops.shutdown_grace_seconds
     environment:
       GROKBOT_MODE: "${GROKBOT_MODE:-dry-run}"
-      GROKBOT_GROK_API_KEY: "${GROKBOT_GROK_API_KEY:?нужен ключ Grok}"
+      GROKBOT_GROK_API_KEY: "${GROKBOT_GROK_API_KEY:?Grok key required}"
       GROKBOT_DATA_API_KEY: "${GROKBOT_DATA_API_KEY:-}"
       GROKBOT_WALLET_PRIVATE_KEY: "${GROKBOT_WALLET_PRIVATE_KEY:-}"
       GROKBOT_LOG_LEVEL: "${GROKBOT_LOG_LEVEL:-INFO}"
       GROKBOT_HEALTH_PORT: "8080"
     ports:
-      - "127.0.0.1:8080:8080"     # наружу health не выставляем
+      - "127.0.0.1:8080:8080"     # do not expose health to the outside
     volumes:
       - ./config:/app/config:ro
       - ./logs:/app/logs
