@@ -1,27 +1,28 @@
-# Пример конфига. Скопировать в config.yaml и подставить свои ключи.
+# Example config. Copy to config.yaml and put in your keys.
 #   cp config.example.yaml config.yaml
-# config.yaml лежит в .gitignore и в репозиторий не попадает.
+# config.yaml is in .gitignore and does not reach the repository.
 #
-# Секреты можно не класть в файл вообще — переменные окружения важнее его:
+# You do not have to put secrets in the file at all — environment
+# variables take precedence:
 #   GROKBOT_GROK_API_KEY, GROKBOT_DATA_API_KEY, GROKBOT_WALLET_PRIVATE_KEY,
 #   GROKBOT_MODE, GROKBOT_RPC_URL, GROKBOT_LOG_PATH, GROKBOT_LOG_LEVEL,
 #   GROKBOT_STATE_PATH, GROKBOT_HEALTH_PORT
-# Так и сделано в Dockerfile: образ не содержит ни одного ключа.
+# That is how the Dockerfile works: the image contains no keys.
 #
-# Конфиг проверяется на старте. Бессмысленные значения (нулевой лимит,
-# порог вне диапазона, live без ключа кошелька) — отказ запуска, а не
-# сюрприз через час торговли.
+# The config is validated at startup. Nonsense values (a zero limit,
+# a threshold out of range, live without a wallet key) refuse to start
+# instead of surprising you an hour into trading.
 
 mode: dry-run            # dry-run | live
 
 grok:
   api_key: "xai-YOUR-KEY-HERE"
   base_url: "https://api.x.ai/v1/chat/completions"
-  fast_model: "grok-4-fast"   # аудитор, нарратив, тайминг
-  checker_model: "grok-4"     # адверсариальный чекер, модель посильнее
+  fast_model: "grok-4-fast"   # auditor, narrative, timing
+  checker_model: "grok-4"     # adversarial checker, the stronger model
   timeout_seconds: 30
   max_retries: 3
-  retry_base_delay: 1.0       # экспоненциальная задержка: base * 2**attempt
+  retry_base_delay: 1.0       # exponential backoff: base * 2**attempt
 
 solana:
   rpc_url: "https://api.mainnet-beta.solana.com"
@@ -29,7 +30,7 @@ solana:
   jito:
     enabled: true
     block_engine_url: "https://mainnet.block-engine.jito.wtf/api/v1/bundles"
-    tip_lamports: 1000000     # чаевые за приоритет
+    tip_lamports: 1000000     # tip for priority
 
 data:
   api_key: "YOUR-DATA-PROVIDER-KEY"
@@ -38,66 +39,66 @@ data:
   request_timeout: 10
 
 risk:
-  max_sol_per_trade: 0.5        # потолок SOL на одну сделку
-  daily_loss_limit_sol: 2.0     # дневной лимит убытка, при достижении стоп
-  max_trades_per_day: 20        # максимум сделок в день
-  max_open_positions: 3         # максимум одновременно открытых позиций
-  max_total_exposure_sol: 1.5   # столько SOL максимум в рынке одновременно
-  cooldown_after_losses: 3      # столько убытков подряд — и пауза; 0 выключает
-  cooldown_minutes: 30          # длина паузы
-  stop_loss_pct: 30.0           # стоп-лосс в процентах, мониторится в фоне
+  max_sol_per_trade: 0.5        # SOL ceiling per trade
+  daily_loss_limit_sol: 2.0     # daily loss limit; hitting it stops trading
+  max_trades_per_day: 20        # max trades per day
+  max_open_positions: 3         # max concurrent open positions
+  max_total_exposure_sol: 1.5   # max SOL in the market at once
+  cooldown_after_losses: 3      # this many losses in a row trigger a pause; 0 disables
+  cooldown_minutes: 30          # pause length
+  stop_loss_pct: 30.0           # stop-loss in percent, watched in the background
   stop_loss_poll_seconds: 15
-  # Выходы вверх и по времени. 0 в любом из них выключает правило.
-  take_profit_pct: 120.0        # зафиксировать прибыль на +120%
-  trailing_stop_pct: 35.0       # откат от пика; считается только выше цены входа
-  max_hold_seconds: 3600        # мемкоин, который час не поехал, не поедет
+  # Exits upward and by time. 0 in any of them turns that rule off.
+  take_profit_pct: 120.0        # take profit at +120%
+  trailing_stop_pct: 35.0       # pullback from the peak; computed only above entry
+  max_hold_seconds: 3600        # a memecoin that did not move in an hour will not move
 
 filter:
-  min_unique_buyers: 5          # минимум уникальных покупателей
-  max_curve_progress: 0.40      # заполнение кривой меньше 40%
-  require_metadata: true        # есть имя и картинка
-  min_age_seconds: 120          # возраст больше 2 минут
-  max_risk_score: 7.0           # отсечка анализатора, 0..10
-  min_total_score: 0.65         # минимальный скоринг для похода к чекеру
-  # Память о создателях токенов, считается по собственным закрытым сделкам.
-  block_creator_after_rugs: 1   # столько сливов — и адрес отсекается; 0 выключает
-  rug_loss_pct: 60.0            # убыток от этого уровня засчитывается как слив
-  one_position_per_creator: true  # два токена одного деплойера — одна ставка
-  forget_creators_after_days: 30  # чистые адреса забываются, адреса со сливами нет
+  min_unique_buyers: 5          # minimum unique buyers
+  max_curve_progress: 0.40      # curve fill under 40%
+  require_metadata: true        # has a name and an image
+  min_age_seconds: 120          # older than 2 minutes
+  max_risk_score: 7.0           # analyzer cutoff, 0..10
+  min_total_score: 0.65         # minimum score to go to the checker
+  # Memory of token creators, counted from our own closed trades.
+  block_creator_after_rugs: 1   # this many rugs and the address is cut; 0 disables
+  rug_loss_pct: 60.0            # a loss from this level counts as a rug
+  one_position_per_creator: true  # two tokens from one deployer are one bet
+  forget_creators_after_days: 30  # clean addresses are forgotten, rugged ones are not
 
 scoring:
   weights:
-    audit: 0.30                 # агент-аудитор: доля органики и отсутствие флагов
-    narrative: 0.25             # агент-нарратив: мем-потенциал
-    timing: 0.15                # агент-тайминг: состояние рынка
-    metrics: 0.30               # метрики анализатора кодом
-  timing_cache_seconds: 900     # кэш тайминг-агента, 15 минут
+    audit: 0.30                 # auditor agent: organic share and absence of flags
+    narrative: 0.25             # narrative agent: meme potential
+    timing: 0.15                # timing agent: market state
+    metrics: 0.30               # analyzer metrics computed in code
+  timing_cache_seconds: 900     # timing-agent cache, 15 minutes
 
 logging:
   path: "logs/trades.jsonl"
   level: "INFO"
-  max_bytes: 50000000         # ротация JSONL при превышении, 0 — не ротировать
-  backups: 5                  # сколько .1 .2 .3 хранить
+  max_bytes: 50000000         # rotate JSONL past this size, 0 — do not rotate
+  backups: 5                  # how many .1 .2 .3 to keep
 
 alerts:
-  # Пусто — уведомления выключены. Формат сообщения понимают Slack (text)
-  # и Discord (content); для Telegram нужен промежуточный релей.
-  # URL обычно содержит токен, поэтому его лучше задавать через
-  # переменную GROKBOT_ALERT_WEBHOOK, а не хранить в файле.
+  # Empty — notifications off. Message format is understood by Slack (text)
+  # and Discord (content); Telegram needs an intermediate relay.
+  # The URL usually contains a token, so set it via
+  # GROKBOT_ALERT_WEBHOOK rather than storing it in the file.
   webhook_url: ""
   events: ["started", "buy", "close", "rug", "breaker", "halted", "blind"]
   timeout_seconds: 10
-  max_per_minute: 20          # лишнее выбрасывается, а не копится в очереди
+  max_per_minute: 20          # extras are dropped, not queued
 
 ops:
-  state_path: "state/pipeline.json"   # позиции и счётчики дня, переживают рестарт
-  reputation_path: "state/creators.json"  # память о создателях токенов
-  health_port: 0                      # 0 — выключено; иначе GET /healthz и /metrics
+  state_path: "state/pipeline.json"   # positions and daily counters, survive a restart
+  reputation_path: "state/creators.json"  # memory of token creators
+  health_port: 0                      # 0 — off; otherwise GET /healthz and /metrics
   health_host: "127.0.0.1"
-  heartbeat_seconds: 300              # строка живости в лог
-  shutdown_grace_seconds: 30          # сколько ждать токены в работе при остановке
-  max_grok_calls_per_day: 2000        # потолок расхода на агентов за сутки
-  grok_max_concurrency: 4             # одновременных запросов к Grok
-  grok_calls_per_minute: 60           # ограничитель частоты
-  breaker_failures: 8                 # столько сбоев подряд размыкают цепь
-  breaker_cooldown_seconds: 120       # и на столько пайплайн перестаёт звать Grok
+  heartbeat_seconds: 300              # liveness line in the log
+  shutdown_grace_seconds: 30          # how long to wait for in-flight tokens on stop
+  max_grok_calls_per_day: 2000        # daily ceiling on agent spend
+  grok_max_concurrency: 4             # concurrent Grok requests
+  grok_calls_per_minute: 60           # rate limiter
+  breaker_failures: 8                 # this many failures in a row open the circuit
+  breaker_cooldown_seconds: 120       # and for this long the pipeline stops calling Grok

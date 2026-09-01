@@ -1,12 +1,12 @@
-"""WebSocket-монитор новых лончей pump.fun.
+"""WebSocket monitor of new pump.fun launches.
 
-Первая ступень пайплайна и самая грубая: фильтрует кодом, без LLM, и
-отсеивает порядка 94% потока. Всё, что сюда не пролезло, дальше не идёт и
-токенов Grok не тратит.
+First stage of the pipeline and the coarsest: filters in code, no LLM,
+and cuts about 94% of the stream. Anything that did not get through
+here goes no further and spends no Grok tokens.
 
-Свежесозданный токен не может пройти фильтр по возрасту, поэтому лончи
-кладутся в буфер `pending`, накапливают сделки из того же сокета и
-проверяются повторно, когда дорастут до `min_age_seconds`.
+A freshly created token cannot pass the age filter, so launches go into
+the `pending` buffer, accumulate trades from the same socket, and are
+checked again once they reach `min_age_seconds`.
 """
 
 from __future__ import annotations
@@ -29,17 +29,18 @@ log = logging.getLogger(__name__)
 
 __all__ = ["CURVE_COMPLETION_SOL", "LaunchMonitor", "parse_create_event", "passes_filter"]
 
-# Сколько держать лонч в буфере, если он так и не набрал покупателей.
+# How long to keep a launch in the buffer if it never gathered buyers.
 PENDING_TTL_SECONDS = 900.0
 
-# Потолки памяти. Процесс живёт сутками, а лончей на pump.fun тысячи в час:
-# без ограничения и буфер, и список уже виденных растут без конца.
+# Memory ceilings. The process lives for days, and pump.fun has
+# thousands of launches an hour: without a cap both the buffer and the
+# already-seen list grow without end.
 MAX_PENDING = 2_000
 MAX_REMEMBERED = 20_000
 
 
 class SeenSet:
-    """Множество последних N ключей. Старые вытесняются, память не течёт."""
+    """Set of the last N keys. Old ones are evicted, memory does not leak."""
 
     def __init__(self, maxlen: int = MAX_REMEMBERED) -> None:
         self.maxlen = maxlen
@@ -59,7 +60,7 @@ class SeenSet:
 
 
 def parse_create_event(payload: dict[str, Any]) -> Token | None:
-    """Событие создания токена -> Token. None, если событие не про создание."""
+    """Token-create event -> Token. None if the event is not a create."""
     if payload.get("txType") not in ("create", "created"):
         return None
     mint = payload.get("mint") or payload.get("mintAddress")
@@ -88,20 +89,20 @@ def parse_create_event(payload: dict[str, Any]) -> Token | None:
         created_timestamp=created_ts,
         sol_in_curve=sol_in_curve,
         market_cap_sol=float(payload.get("marketCapSol") or 0.0),
-        # Резерв, который отдаёт сокет, включает 30 виртуальных SOL: они
-        # лежат в кривой с рождения и прогрессом не являются.
+        # The reserve the socket reports includes 30 virtual SOL: they
+        # sit in the curve from birth and are not progress.
         curve_progress=progress_from_sol(sol_in_curve),
     )
 
 
 def passes_filter(token: Token, cfg: FilterConfig) -> tuple[bool, str]:
-    """Базовый фильтр. Возвращает (прошёл, причина отказа или "ok").
+    """Base filter. Returns (passed, reject reason or "ok").
 
-    Причина возвращается всегда — она уходит в лог как `skip.reason`, иначе
-    потом не понять, на чём именно осыпался поток.
+    A reason is always returned — it goes into the log as `skip.reason`,
+    otherwise later you cannot tell what the stream died on.
     """
-    # Сначала окончательные приговоры (метаданные, переполненная кривая),
-    # потом временные — токен с ними ещё может дозреть в буфере монитора.
+    # Final verdicts first (metadata, a full curve), then temporary
+    # ones — the token may still ripen in the monitor buffer.
     if cfg.require_metadata and not token.has_metadata:
         return False, "no_metadata"
     if token.curve_progress >= cfg.max_curve_progress:
@@ -114,7 +115,7 @@ def passes_filter(token: Token, cfg: FilterConfig) -> tuple[bool, str]:
 
 
 class LaunchMonitor:
-    """Подписка на новые токены и их сделки с фильтрацией на лету."""
+    """Subscribe to new tokens and their trades, filtering on the fly."""
 
     def __init__(
         self,
@@ -128,10 +129,10 @@ class LaunchMonitor:
         self._buyers: dict[str, set[str]] = {}
         self._emitted = SeenSet()
 
-    # -- обработка событий -------------------------------------------------
+    # -- event handling ----------------------------------------------------
 
     def handle_event(self, payload: dict[str, Any]) -> Token | None:
-        """Одно сообщение из сокета. Возвращает токен, если он готов идти дальше."""
+        """One message from the socket. Returns the token if it is ready to go on."""
         tx_type = payload.get("txType")
 
         if tx_type in ("create", "created"):
@@ -139,8 +140,8 @@ class LaunchMonitor:
             if token and token.mint not in self._emitted:
                 self._evict_if_crowded()
                 self.pending[token.mint] = token
-                # Создателя в покупатели не записываем: нужен счётчик
-                # посторонних кошельков, а не всех подряд.
+                # Do not count the creator as a buyer: we need a count
+                # of outside wallets, not everyone in a row.
                 self._buyers[token.mint] = set()
             return None
 
@@ -164,13 +165,13 @@ class LaunchMonitor:
         return self._promote(token)
 
     def _promote(self, token: Token) -> Token | None:
-        """Проверить дозревший токен и вынуть его из буфера, если решение принято."""
+        """Check a ripe token and pull it from the buffer if a decision was made."""
         ok, reason = passes_filter(token, self.filter)
         if ok:
             self._forget(token.mint)
             self._emitted.add(token.mint)
             return token
-        # too_young / few_buyers — ещё может дозреть, остальное окончательно
+        # too_young / few_buyers — may still ripen, the rest is final
         if reason in ("too_young", "few_buyers"):
             return None
         self._forget(token.mint)
@@ -180,7 +181,7 @@ class LaunchMonitor:
         return None
 
     def sweep(self, now: float | None = None) -> list[Token]:
-        """Пройтись по буферу: дозревшие — наружу, протухшие — вон."""
+        """Walk the buffer: ripe ones out, stale ones gone."""
         now = now or time.time()
         ready: list[Token] = []
         for mint in list(self.pending):
@@ -200,7 +201,7 @@ class LaunchMonitor:
         self._buyers.pop(mint, None)
 
     def _evict_if_crowded(self) -> None:
-        """Буфер переполнен — выкидываем самые старые недозревшие лончи."""
+        """Buffer is full — drop the oldest unripe launches."""
         while len(self.pending) >= MAX_PENDING:
             oldest = min(self.pending, key=lambda mint: self.pending[mint].created_timestamp)
             token = self.pending[oldest]
@@ -209,17 +210,17 @@ class LaunchMonitor:
             if self.on_skip:
                 self.on_skip(token, "buffer_overflow")
 
-    # -- сокет -------------------------------------------------------------
+    # -- socket ------------------------------------------------------------
 
     async def stream(self) -> AsyncIterator[Token]:
-        """Бесконечный поток отфильтрованных токенов. Переподключается сам."""
+        """Infinite stream of filtered tokens. Reconnects on its own."""
         sweeper_delay = 10.0
         backoff = 1.0
         while True:
             try:
                 async with websockets.connect(self.config.data.ws_url) as ws:
                     await ws.send(json.dumps({"method": "subscribeNewToken"}))
-                    log.info("монитор подключён к %s", self.config.data.ws_url)
+                    log.info("monitor connected to %s", self.config.data.ws_url)
                     backoff = 1.0
                     last_sweep = time.time()
                     while True:
@@ -247,8 +248,8 @@ class LaunchMonitor:
                                 yield token
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:  # обрыв сокета — ждём и переподключаемся
-                log.warning("монитор отвалился (%s), переподключение через %.0fs", exc, backoff)
+            except Exception as exc:  # socket drop — wait and reconnect
+                log.warning("monitor dropped (%s), reconnecting in %.0fs", exc, backoff)
                 with contextlib.suppress(asyncio.CancelledError):
                     await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60.0)

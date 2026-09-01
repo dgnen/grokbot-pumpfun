@@ -1,13 +1,13 @@
-"""Состояние, которое обязано пережить рестарт.
+"""State that must survive a restart.
 
-Процесс, торгующий сутками, будет перезапущен: деплой, OOM, ребут хоста.
-Если после рестарта он забудет открытые позиции и счётчики дня, то купит
-то же самое второй раз и превысит дневной лимит убытка — оба лимита
-считаются от нуля.
+A process that trades for days will be restarted: a deploy, an OOM, a
+host reboot. If after restart it forgets open positions and the day's
+counters, it will buy the same thing a second time and exceed the daily
+loss limit — both limits start from zero.
 
-Файл пишется атомарно: сначала во временный, потом os.replace. Так на
-диске никогда не лежит наполовину записанный JSON, даже если процесс
-убили в момент сохранения.
+The file is written atomically: first to a temp, then os.replace. So
+the disk never holds a half-written JSON, even if the process was
+killed mid-save.
 """
 
 from __future__ import annotations
@@ -30,10 +30,10 @@ STATE_VERSION = 1
 
 
 class PipelineState(BaseModel):
-    """Снимок всего, что нельзя потерять."""
+    """Snapshot of everything that must not be lost."""
 
     version: int = STATE_VERSION
-    day: str = ""                                   # сутки UTC, к которым относятся счётчики
+    day: str = ""                                   # UTC day the counters belong to
     trades_today: int = 0
     realized_pnl_sol: float = 0.0
     grok_calls_today: int = 0
@@ -48,13 +48,13 @@ class PipelineState(BaseModel):
 
 
 class StateStore:
-    """Атомарное чтение и запись состояния в один JSON-файл."""
+    """Atomic read and write of state to one JSON file."""
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
 
     def load(self) -> PipelineState | None:
-        """Прочитать состояние. None, если файла нет или он испорчен."""
+        """Read state. None if the file is missing or corrupt."""
         if not self.path.exists():
             return None
         try:
@@ -63,7 +63,7 @@ class StateStore:
         except Exception as exc:
             backup = self.path.with_suffix(self.path.suffix + ".corrupt")
             log.error(
-                "состояние %s не читается (%s) — отложено в %s, стартуем с чистого",
+                "state %s unreadable (%s) — set aside as %s, starting clean",
                 self.path, exc, backup,
             )
             with contextlib.suppress(OSError):
@@ -71,12 +71,12 @@ class StateStore:
             return None
 
         if state.version != STATE_VERSION:
-            log.warning("состояние версии %d, ожидалась %d — счётчики дня сброшены",
+            log.warning("state version %d, expected %d — daily counters reset",
                         state.version, STATE_VERSION)
         return state
 
     def save(self, state: PipelineState) -> None:
-        """Записать состояние атомарно. Сбой записи не роняет торговлю."""
+        """Write state atomically. A write failure does not take down trading."""
         state.updated_at = time.time()
         tmp = self.path.with_suffix(self.path.suffix + f".tmp{os.getpid()}")
         try:
@@ -87,7 +87,7 @@ class StateStore:
                 os.fsync(fh.fileno())
             os.replace(tmp, self.path)
         except OSError as exc:
-            log.error("не удалось сохранить состояние в %s: %s", self.path, exc)
+            log.error("failed to save state to %s: %s", self.path, exc)
             tmp.unlink(missing_ok=True)
 
     def clear(self) -> None:
@@ -95,15 +95,15 @@ class StateStore:
 
 
 class InstanceLock:
-    """Замок «один бот на одно состояние».
+    """Lock of «one bot per one state».
 
-    Два процесса на одном файле состояния — это два бота на одном кошельке:
-    они перезапишут позиции друг друга, дважды выберут дневной лимит и
-    купят один и тот же токен. Замок стоит копейки, а спасает от сценария,
-    который иначе обнаруживается по деньгам.
+    Two processes on one state file are two bots on one wallet:
+    they will overwrite each other's positions, spend the daily limit
+    twice, and buy the same token. The lock costs nothing and saves
+    a scenario that is otherwise discovered by money.
 
-    Замок от мёртвого процесса перехватывается: падение не должно
-    оставлять систему незапускаемой.
+    A lock from a dead process is taken over: a crash must not leave
+    the system unable to start.
     """
 
     def __init__(self, path: str | Path) -> None:
@@ -123,27 +123,27 @@ class InstanceLock:
             os.kill(pid, 0)
         except ProcessLookupError:
             return False
-        except PermissionError:      # процесс есть, но чужой
+        except PermissionError:      # the process exists, but is not ours
             return True
         return True
 
     def acquire(self) -> bool:
-        """Занять замок. False, если его держит живой процесс."""
+        """Take the lock. False if a live process holds it."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         pid = self._holder()
         if pid and pid != os.getpid() and self._alive(pid):
-            log.error("состояние %s уже занято процессом %d — второй бот на том "
-                      "же кошельке не запускается", self.path.stem, pid)
+            log.error("state %s is already held by process %d — a second bot on "
+                      "the same wallet will not start", self.path.stem, pid)
             return False
         if pid and not self._alive(pid):
-            log.warning("замок остался от мёртвого процесса %d, перехватываем", pid)
+            log.warning("lock left by dead process %d, taking it over", pid)
         try:
             self.path.write_text(
                 json.dumps({"pid": os.getpid(), "started": time.time()}),
                 encoding="utf-8",
             )
         except OSError as exc:
-            log.error("не удалось занять замок %s: %s", self.path, exc)
+            log.error("failed to take lock %s: %s", self.path, exc)
             return False
         self.acquired = True
         return True
@@ -158,7 +158,7 @@ class InstanceLock:
 
     def __enter__(self) -> InstanceLock:
         if not self.acquire():
-            raise RuntimeError(f"состояние занято другим процессом: {self.path}")
+            raise RuntimeError(f"state is held by another process: {self.path}")
         return self
 
     def __exit__(self, *exc: Any) -> None:
@@ -166,12 +166,12 @@ class InstanceLock:
 
 
 def describe(state: PipelineState) -> str:
-    """Строка для стартового лога."""
+    """Line for the startup log."""
     age = max(0.0, time.time() - state.updated_at) / 60 if state.updated_at else 0.0
     return (
-        f"день {state.day or '?'}, сделок {state.trades_today}, "
+        f"day {state.day or '?'}, trades {state.trades_today}, "
         f"PnL {state.realized_pnl_sol:+.4f} SOL, "
-        f"открытых позиций {len(state.positions)}, "
-        f"вызовов Grok {state.grok_calls_today}, "
-        f"записано {age:.0f} мин назад"
+        f"open positions {len(state.positions)}, "
+        f"Grok calls {state.grok_calls_today}, "
+        f"written {age:.0f} min ago"
     )

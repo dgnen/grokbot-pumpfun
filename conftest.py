@@ -1,4 +1,4 @@
-"""Корень проекта в sys.path, чтобы тесты видели пакет `src`."""
+"""Put the project root on sys.path so tests can import the `src` package."""
 
 import sys
 from pathlib import Path

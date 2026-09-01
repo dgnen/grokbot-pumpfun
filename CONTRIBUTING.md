@@ -1,52 +1,54 @@
-# Как здесь принято работать
+# How we work here
 
-Это торговый код. Ошибка в нём стоит денег, а не времени, поэтому правила
-жёстче обычного.
+This is trading code. A bug in it costs money, not time, so the rules
+are stricter than usual.
 
-## Перед отправкой изменений
+## Before sending changes
 
 ```bash
-make check      # ruff + mypy + pytest, то же самое гоняет CI
+make check      # ruff + mypy + pytest, the same thing CI runs
 ```
 
-Всё три должны быть зелёными. Тесты в сеть не ходят — если понадобился
-внешний сервис, значит нужен `httpx.MockTransport`, а не пропуск теста.
+All three must be green. Tests do not go to the network — if an external
+service is needed, that means `httpx.MockTransport`, not skipping the
+test.
 
-## Что обязательно покрывается тестом
+## What must be covered by a test
 
-- любое правило, которое решает, покупать или нет;
-- любая арифметика денег: размер позиции, себестоимость, PnL, комиссия;
-- любой отказ, который должен приводить к **отказу от сделки**, а не к
-  молчаливому продолжению.
+- any rule that decides whether to buy or not;
+- any money arithmetic: position size, cost basis, PnL, fee;
+- any failure that must lead to **refusing the trade**, not to a silent
+  continue.
 
-Для математики кривой пишутся инварианты, а не примеры: «произведение
-резервов сохраняется», «круг без комиссии бесплатен», а не «на этих
-числах получилось 0.0413».
+For curve math, write invariants, not examples: "the product of reserves
+is preserved", "a round-trip without a fee is free", not "on these
+numbers we got 0.0413".
 
-## Правило пессимистичного отказа
+## Pessimistic-reject rule
 
-Любой сбой — таймаут, кривой JSON, недоступный провайдер, неизвестная
-цена — приводит к решению **не покупать**. Никогда наоборот. Если новый
-код может завершиться неопределённо, определённость должна быть в сторону
-бездействия.
+Any failure — a timeout, malformed JSON, an unreachable provider, an
+unknown price — leads to a decision **not to buy**. Never the other way
+around. If new code can finish in an undefined state, the defined
+outcome must be inaction.
 
-## Изменение промптов
+## Changing prompts
 
-Промпт — часть поведения бота. Меняя текст, поднимите `version` у агента
-(`src/agents/*.py`). Без этого статистика до и после правки склеится в
-одну кучу, и подбор весов начнёт сравнивать двух разных ботов.
+A prompt is part of the bot's behavior. When you change the text, bump
+the agent's `version` (`src/agents/*.py`). Without that, statistics
+before and after the edit collapse into one pile, and weight tuning
+starts comparing two different bots.
 
-## Что не принимается
+## What is not accepted
 
-- Реализация отправки транзакций в `LiveExecutor`. Она оставлена
-  заглушкой намеренно: этот код каждый дописывает сам, под свой кошелёк и
-  под свою ответственность.
-- Значения по умолчанию, которые делают бота агрессивнее: больше размер,
-  меньше порог, слабее лимиты. Пользователь поднимет их сам, если решит.
-- Секреты в коде, в тестах и в примерах конфига.
+- Implementing transaction submission in `LiveExecutor`. It is left as
+  a stub on purpose: everyone writes that code themselves, for their
+  own wallet and under their own responsibility.
+- Defaults that make the bot more aggressive: larger size, lower
+  threshold, weaker limits. The user will raise them if they decide to.
+- Secrets in code, in tests, and in the example config.
 
-## Стиль
+## Style
 
-Комментарии объясняют, **почему** так, а не что делает строка. Если
-поведение неочевидно — опишите ситуацию, в которой оно спасает. Именно
-такие комментарии здесь и стоят.
+Comments explain **why**, not what the line does. If the behavior is
+non-obvious — describe the situation it saves you from. Those are the
+comments already here.

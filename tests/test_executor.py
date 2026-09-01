@@ -1,8 +1,8 @@
-"""Исполнение в dry-run: те же комиссия и проскальзывание, что в live.
+"""Dry-run execution: the same fee and slippage as live.
 
-Смысл этих тестов — не дать dry-run снова стать оптимистичным. Если он
-покупает по котировке, вся отчётность врёт в одну сторону, и решение
-включать live принимается по несуществующей прибыли.
+These tests exist so dry-run does not become optimistic again. If it
+buys at the quote, all reporting lies in one direction, and the live
+decision is made on profit that was never there.
 """
 
 import httpx
@@ -49,12 +49,12 @@ def position(tokens: float = 1_000_000.0, spent: float = 0.5) -> Position:
                     opened_at=1.0, tx_hash=DRY_RUN_TX)
 
 
-# --- покупка --------------------------------------------------------------
+# --- buy ------------------------------------------------------------------
 
 
 async def test_buy_pays_worse_than_quote():
-    """Средняя цена исполнения обязана быть хуже котировки: иначе где-то
-    потерялись комиссия и собственное влияние на цену."""
+    """The average fill must be worse than the quote: otherwise the fee
+    and the order's own price impact were lost somewhere."""
     executor = DryRunExecutor(config(), client(LIVE_CURVE))
     spot = CurveState.from_api(LIVE_CURVE).spot_price
 
@@ -69,7 +69,7 @@ async def test_buy_pays_worse_than_quote():
 async def test_buy_tokens_match_the_curve():
     executor = DryRunExecutor(config(), client(LIVE_CURVE))
     result = await executor.buy(token(), 0.4)
-    # цена × количество = потрачено, до цента
+    # price * amount = spent, to the cent
     assert result.price * result.token_amount == pytest.approx(result.sol_amount, rel=1e-12)
 
 
@@ -77,7 +77,7 @@ async def test_buy_refused_above_impact_cap():
     executor = DryRunExecutor(config(max_price_impact_pct=1.5), client(LIVE_CURVE))
     result = await executor.buy(token(), 5.0)
     assert not result.ok
-    assert "влияние на цену" in result.error
+    assert "price impact" in result.error
     assert result.impact_pct > 1.5
 
 
@@ -85,12 +85,12 @@ async def test_buy_refused_without_curve_data():
     executor = DryRunExecutor(config(), client({}))
     result = await executor.buy(token(market_cap_sol=0.0), 0.4)
     assert not result.ok
-    assert "кривой неизвестно" in result.error
+    assert "curve state unknown" in result.error
 
 
 async def test_buy_falls_back_to_market_cap():
-    """Резервов нет, но капитализация известна — состояние кривой из неё
-    восстанавливается точно, потому что произведение резервов постоянно."""
+    """No reserves, but market cap is known — curve state is recovered
+    from it exactly, because the reserve product is constant."""
     executor = DryRunExecutor(config(), client({}))
     result = await executor.buy(token(market_cap_sol=60.0), 0.2)
     assert result.ok
@@ -102,7 +102,7 @@ async def test_zero_size_refused():
     assert not (await executor.buy(token(), 0.0)).ok
 
 
-# --- продажа --------------------------------------------------------------
+# --- sell -----------------------------------------------------------------
 
 
 async def test_sell_receives_less_than_quote():
@@ -122,8 +122,8 @@ async def test_partial_sell_takes_its_share():
 
 
 async def test_dust_tail_is_sold_whole():
-    """Оставлять в позиции меньше процента незачем: это пыль, которая
-    только мешает учёту."""
+    """Leaving less than a percent in the position is pointless: it is
+    dust that only gets in the way of the books."""
     executor = DryRunExecutor(config(), client(LIVE_CURVE))
     result = await executor.sell(position(tokens=1_000_000.0), fraction=0.995)
     assert result.token_amount == pytest.approx(1_000_000.0)
@@ -142,7 +142,7 @@ async def test_sell_without_curve_refused():
     assert not result.ok
 
 
-# --- цена и состояние -----------------------------------------------------
+# --- price and state ------------------------------------------------------
 
 
 async def test_price_returns_spot():
@@ -164,7 +164,7 @@ async def test_curve_progress_excludes_virtual():
     assert state.real_sol == pytest.approx(45.0 - INITIAL_VIRTUAL_SOL)
 
 
-# --- режимы ---------------------------------------------------------------
+# --- modes ----------------------------------------------------------------
 
 
 def test_build_executor_picks_by_mode():
@@ -176,15 +176,15 @@ def test_build_executor_picks_by_mode():
 
 async def test_live_executor_is_a_deliberate_stub():
     executor = LiveExecutor(config(), client(LIVE_CURVE))
-    with pytest.raises(NotImplementedError, match="намеренно"):
+    with pytest.raises(NotImplementedError, match="intentionally unimplemented"):
         await executor.buy(token(), 0.4)
-    with pytest.raises(NotImplementedError, match="намеренно"):
+    with pytest.raises(NotImplementedError, match="intentionally unimplemented"):
         await executor.sell(position())
 
 
 async def test_live_executor_can_still_quote():
-    """Расчёт заявки живой и в live: из него берутся max_sol_cost и
-    min_sol_output, когда отправка будет дописана."""
+    """Order quoting is live even in live mode: max_sol_cost and
+    min_sol_output come from it once sending is implemented."""
     executor = LiveExecutor(config(), client(LIVE_CURVE))
     state = await executor.curve("Mint1")
     assert executor.plan_buy(state, 0.4).ok

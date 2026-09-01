@@ -1,21 +1,21 @@
-"""Оркестратор: связывает все ступени в один поток.
+"""Orchestrator: wires every stage into one flow.
 
-    монитор → анализатор → аудитор → нарратив → тайминг → скоринг →
-    чекер → риск-гейт → исполнение
+    monitor → analyzer → auditor → narrative → timing → scoring →
+    checker → risk-gate → execution
 
-Каждая ступень либо пропускает токен дальше, либо пишет skip с причиной и
-на этом заканчивает. Дорогие ступени стоят после дешёвых: до grok-4
-доходит только то, что пережило фильтр кодом, метрики, трёх быстрых
-агентов и скоринговый порог.
+Each stage either passes the token on or writes a skip with a reason and
+stops there. Expensive stages sit after cheap ones: only what survived
+the code filter, metrics, three fast agents, and the scoring threshold
+reaches grok-4.
 
-Процесс рассчитан на то, чтобы жить сутками: состояние переживает
-рестарт, SIGTERM останавливает аккуратно, расход Grok ограничен, живость
-видна снаружи через /healthz.
+The process is meant to run for days: state survives a restart, SIGTERM
+stops it cleanly, Grok spend is capped, and liveness is visible outside
+via /healthz.
 
-Запуск:
+Run:
     python -m src.pipeline --config config.yaml
-    python -m src.pipeline --config config.yaml --check          # только проверить
-    python -m src.pipeline --config config.yaml --i-understand-the-risk   # для live
+    python -m src.pipeline --config config.yaml --check          # check only
+    python -m src.pipeline --config config.yaml --i-understand-the-risk   # for live
 """
 
 from __future__ import annotations
@@ -56,19 +56,19 @@ from .state import InstanceLock, StateStore
 
 log = logging.getLogger("pipeline")
 
-# Сколько токенов разбираем одновременно. Больше — упрёмся в лимиты Grok.
+# How many tokens we review at once. More — we hit Grok limits.
 MAX_CONCURRENT_TOKENS = 4
 
-# Столько без единого события из сокета — считаем поток застрявшим и
-# сообщаем об этом в /healthz. Лончи на pump.fun идут непрерывно.
+# This long with no socket event — we treat the stream as stalled and
+# report it in /healthz. Launches on pump.fun run continuously.
 STALL_SECONDS = 600.0
 
 
 def unmatched_intents(records: list[dict[str, Any]], tail: int = 200) -> list[str]:
-    """Намерения купить, за которыми не последовало покупки или отказа.
+    """Buy intents that were not followed by a buy or a reject.
 
-    Смотрим только хвост лога: старые расхождения уже разобраны руками,
-    а нас интересует то, что оборвалось последним запуском.
+    We only look at the log tail: older mismatches have already been
+    reviewed by hand, and we care about what the last run left hanging.
     """
     pending: dict[str, bool] = {}
     for record in records[-tail:]:
@@ -84,7 +84,7 @@ def unmatched_intents(records: list[dict[str, Any]], tail: int = 200) -> list[st
 
 
 class Pipeline:
-    """Держит агентов, состояние риска и лог; гоняет токены по ступеням."""
+    """Holds agents, risk state, and the log; runs tokens through the stages."""
 
     def __init__(self, config: Config, store: StateStore | None = None) -> None:
         self.config = config
@@ -126,7 +126,7 @@ class Pipeline:
             "blind": False, "cooldown": False,
         }
 
-    # -- жизненный цикл ----------------------------------------------------
+    # -- lifecycle ---------------------------------------------------------
 
     async def __aenter__(self) -> Pipeline:
         await self.analyzer.__aenter__()
@@ -146,48 +146,48 @@ class Pipeline:
         await self._grok_client.aclose()
 
     def restore(self) -> None:
-        """Поднять состояние прошлого запуска: позиции, лимиты дня, репутацию.
+        """Restore the previous run's state: positions, daily limits, reputation.
 
-        Исходы прошлых сделок тоже поднимаются: агент-тайминг не должен
-        после каждого рестарта считать, что история пуста.
+        Past trade outcomes are restored too: the timing agent must not
+        treat history as empty after every restart.
         """
         records = list(read_log(self.config.logging.path))
         seeded = self.pulse.seed_from_log(records, self.config.filter.rug_loss_pct)
         if seeded:
-            log.info("в память рынка поднято %d прошлых исходов", seeded)
+            log.info("seeded market memory with %d past outcomes", seeded)
         for mint in unmatched_intents(records):
-            log.error("на диске осталось намерение купить %s без записи о покупке — "
-                      "возможно, процесс умер во время исполнения. Проверьте кошелёк: "
-                      "позиция может существовать, а бот о ней не знает", mint[:8])
+            log.error("buy intent for %s left on disk with no buy record — "
+                      "the process may have died mid-execution. Check the wallet: "
+                      "a position may exist that the bot does not know about", mint[:8])
             self.notifier.notify(
-                "stalled", f"незакрытое намерение купить {mint[:8]} после рестарта",
+                "stalled", f"unclosed buy intent for {mint[:8]} after restart",
                 mint=mint,
             )
         forgotten = self.reputation.forget_older_than(self.config.filter.forget_creators_after_days)
-        log.info("книга репутации: %s%s", self.reputation.summary(),
-                 f", забыто устаревших {forgotten}" if forgotten else "")
+        log.info("reputation book: %s%s", self.reputation.summary(),
+                 f", forgot {forgotten} stale" if forgotten else "")
         if self.risk.restore():
-            # Бюджет вызовов Grok продолжается с того же места, иначе
-            # рестарт-петля выест дневной лимит за час.
+            # Grok call budget continues from the same place, otherwise
+            # a restart loop would burn the daily limit in an hour.
             self.grok_ops.budget.spent = self.risk.grok_calls_today
             for mint, position in self.risk.positions.items():
-                log.info("позиция под присмотром после рестарта: %s, вход %.12f, %.4f SOL",
+                log.info("position under watch after restart: %s, entry %.12f, %.4f SOL",
                          mint[:8], position.entry_price, position.sol_spent)
 
     async def serve(self) -> int:
-        """Полный жизненный цикл: старт, работа, аккуратная остановка."""
+        """Full lifecycle: start, run, clean shutdown."""
         if not self.lock.acquire():
-            log.error("запуск отменён: состояние занято другим процессом. "
-                      "Два бота на одном кошельке перезапишут позиции друг друга")
+            log.error("start cancelled: state is held by another process. "
+                      "Two bots on one wallet will overwrite each other's positions")
             return 2
         install_signal_handlers(self.request_stop)
         self.restore()
         await self.health.start()
         self.watcher.start()
         self.heartbeat.start()
-        log.info("пайплайн запущен: %s", self.config.summary())
+        log.info("pipeline started: %s", self.config.summary())
         self.notifier.notify(
-            "started", f"пайплайн запущен, режим {self.config.mode}",
+            "started", f"pipeline started, mode {self.config.mode}",
             open_positions=self.risk.open_count, mode=self.config.mode,
         )
 
@@ -201,15 +201,15 @@ class Pipeline:
         return 0
 
     def request_stop(self, reason: str = "stop") -> None:
-        """Вызывается обработчиком сигнала. Второй сигнал не ускоряет выход."""
+        """Called by the signal handler. A second signal does not speed up exit."""
         if not self._stopping.is_set():
-            log.info("получен %s — останавливаемся аккуратно", reason)
+            log.info("got %s — stopping cleanly", reason)
             self._stopping.set()
         else:
-            log.warning("%s повторно, уже останавливаемся", reason)
+            log.warning("%s again, already stopping", reason)
 
     async def shutdown(self) -> None:
-        """Доделать начатое, сохранить состояние, закрыть соединения."""
+        """Finish in-flight work, persist state, close connections."""
         done, cancelled = await drain(set(self._tasks), self.config.ops.shutdown_grace_seconds)
         self._tasks.clear()
         self._sync_counters()
@@ -220,25 +220,25 @@ class Pipeline:
         await self.health.stop()
         self.lock.release()
         log.info(
-            "остановлено: доделано %d, снято %d, открытых позиций %d, "
-            "сделок за день %d, PnL %+.4f SOL, вызовов Grok %d",
+            "stopped: finished %d, cancelled %d, open positions %d, "
+            "trades today %d, PnL %+.4f SOL, Grok calls %d",
             done, cancelled, self.risk.open_count, self.risk.trades_today,
             self.risk.realized_pnl_sol, self.grok_ops.budget.spent,
         )
         self.notifier.notify(
             "stopped",
-            f"остановлен: открытых позиций {self.risk.open_count}, "
-            f"PnL за день {self.risk.realized_pnl_sol:+.4f} SOL",
+            f"stopped: open positions {self.risk.open_count}, "
+            f"PnL today {self.risk.realized_pnl_sol:+.4f} SOL",
             open_positions=self.risk.open_count,
         )
         await self.notifier.aclose()
         if self.risk.positions:
-            log.warning("позиции остаются открытыми: %s — стоп-лосс не работает, "
-                        "пока процесс не поднят снова",
+            log.warning("positions remain open: %s — stop-loss does not work "
+                        "until the process is up again",
                         ", ".join(m[:8] for m in self.risk.positions))
 
     async def _consume(self) -> None:
-        """Читать поток монитора и раздавать токены в обработку."""
+        """Read the monitor stream and hand tokens off for processing."""
         async for token in self.monitor.stream():
             self._last_event_at = time.time()
             self.metrics.inc("tokens_seen")
@@ -261,28 +261,28 @@ class Pipeline:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                log.exception("токен %s уронил обработку: %s", token.mint, exc)
+                log.exception("token %s crashed processing: %s", token.mint, exc)
                 self.metrics.inc("errors")
                 self.trade_log.skip(token, stage="pipeline",
                                     reason="internal_error", detail=str(exc))
 
-    # -- ступени -----------------------------------------------------------
+    # -- stages ------------------------------------------------------------
 
     async def process(self, token: Token) -> Analysis | None:
-        """Один токен от метрик до покупки. None, если отсеян."""
-        log.info("разбираем %s (%s), покупателей %d",
+        """One token from metrics to buy. None if skipped."""
+        log.info("reviewing %s (%s), buyers %d",
                  token.symbol or "?", token.mint[:8], token.unique_buyers)
         self.reputation.observe(token.creator)
         self.pulse.record_passed()
 
-        # 1.5. Память о создателе. Бесплатная ступень перед всеми платными:
-        # адрес, который уже сливал, дальше не идёт.
+        # 1.5. Memory of the creator. Free stage before every paid one:
+        # an address that already rugged goes no further.
         blocked = self._creator_verdict(token)
         if blocked:
             return self._reject(Analysis(token=token), stage="reputation",
                                 reason="creator_blocked", detail=blocked)
 
-        # 2. Анализатор: сеть параллельно, метрики кодом.
+        # 2. Analyzer: network in parallel, metrics in code.
         info, holders, trades = await self.analyzer.fetch(token.mint)
         enrich_token(token, info)
         curve = state_from_any(info, token.market_cap_sol)
@@ -297,23 +297,23 @@ class Pipeline:
             return self._reject(analysis, stage="analyzer", reason=reason,
                                 detail=f"risk_score={metrics.risk_score}")
 
-        # 3-5. Быстрые агенты параллельно. Тайминг обычно берётся из кэша.
+        # 3-5. Fast agents in parallel. Timing usually comes from cache.
         analysis.audit, analysis.narrative, analysis.timing = await asyncio.gather(
             self.auditor.run(token, trades, holders, metrics),
             self.narrative.run(token),
             self.timing.get(self._market_snapshot()),
         )
 
-        # 6. Скоринг кодом.
+        # 6. Scoring in code.
         analysis.scores = compute_scores(analysis, self.config)
         ok, reason = passes_threshold(analysis.scores, self.config)
         if not ok:
             name, value = weakest_component(analysis.scores)
             return self._reject(analysis, stage="scoring", reason=reason,
-                                detail=f"слабее всего {name}={value:.3f}")
+                                detail=f"weakest {name}={value:.3f}")
 
-        # План сделки считается до чекера: ему нужно видеть, во что
-        # обойдётся вход и выход, а не только то, как хорош токен.
+        # The trade plan is computed before the checker: it needs to see
+        # what entry and exit will cost, not only how good the token is.
         liquidity_cap = (
             max_sol_for_impact(curve, self.config.market.max_price_impact_pct,
                                self.config.market.trade_fee_pct)
@@ -321,7 +321,7 @@ class Pipeline:
         )
         analysis.plan = self.risk.evaluate(token.mint, analysis.scores.total, liquidity_cap)
 
-        # 7. Адверсариальный чекер на сильной модели.
+        # 7. Adversarial checker on the strong model.
         analysis.checker = await self.checker.run(analysis)
         if not analysis.checker.approve:
             return self._reject(
@@ -329,22 +329,22 @@ class Pipeline:
                 detail=f"{analysis.checker.reason} [{', '.join(analysis.checker.flags)}]",
             )
 
-        # 8. Риск-гейт. Пересчитывается после чекера: пока сильная модель
-        # думала, могли открыться другие позиции и лимиты поменялись.
+        # 8. Risk gate. Recalculated after the checker: while the strong
+        # model thought, other positions may have opened and limits changed.
         decision = self.risk.evaluate(token.mint, analysis.scores.total, liquidity_cap)
         if not decision.approved:
             return self._reject(analysis, stage="risk", reason=decision.reason)
 
-        # 9. Исполнение. Намерение фиксируется до отправки: если процесс
-        # умрёт между исполнением и учётом, след останется на диске.
+        # 9. Execution. Intent is recorded before send: if the process
+        # dies between execution and booking, a trace stays on disk.
         self._sync_counters()
         self.trade_log.intent(analysis, size_sol=decision.size_sol)
         try:
             result = await self.executor.buy(token, decision.size_sol)
         except NotImplementedError as exc:
-            # Live-исполнитель — заглушка по замыслу: об этом надо кричать,
-            # а не глотать как обычную ошибку ступени.
-            log.error("исполнение не реализовано: %s", exc)
+            # Live executor is a stub by design: this must be loud,
+            # not swallowed as an ordinary stage error.
+            log.error("execution not implemented: %s", exc)
             return self._reject(analysis, stage="executor", reason="executor_not_implemented",
                                 detail=str(exc))
         if not result.ok:
@@ -361,12 +361,12 @@ class Pipeline:
         self.metrics.inc("buys")
         self.pulse.record_bought()
         self.metrics.gauge("open_positions", self.risk.open_count)
-        log.info("КУПЛЕНО %s на %.4f SOL, score %.3f, tx %s",
+        log.info("BOUGHT %s for %.4f SOL, score %.3f, tx %s",
                  token.symbol or token.mint[:8], decision.size_sol,
                  analysis.scores.total, result.tx_hash)
         self.notifier.notify(
             "buy",
-            f"куплен {token.symbol or token.mint[:8]} на {decision.size_sol:.4f} SOL, "
+            f"bought {token.symbol or token.mint[:8]} for {decision.size_sol:.4f} SOL, "
             f"score {analysis.scores.total:.3f}",
             mint=token.mint, size_sol=decision.size_sol,
             score=analysis.scores.total, tx=result.tx_hash,
@@ -376,7 +376,7 @@ class Pipeline:
     def _reject(
         self, analysis: Analysis, *, stage: str, reason: str, detail: str | None = None
     ) -> Analysis | None:
-        """Отказ на ступени: метрика, запись в лог, конец разбора."""
+        """Stage reject: metric, log record, end of review."""
         self.metrics.inc(f"skip_{stage}")
         self.trade_log.skip(
             analysis.token, stage=stage, reason=reason, detail=detail,
@@ -384,51 +384,51 @@ class Pipeline:
         )
         return None
 
-    # -- состояние и наблюдаемость ----------------------------------------
+    # -- state and observability -------------------------------------------
 
     def _heartbeat_status(self) -> dict[str, Any]:
-        """Снимок для heartbeat, попутно ловящий переходы.
+        """Snapshot for the heartbeat, catching transitions along the way.
 
-        Во время застоя событий из сокета нет, и другого повода заметить
-        его — тоже: heartbeat остаётся единственным тиком.
+        During a stall there are no socket events, and no other reason
+        to notice it either: the heartbeat is the only remaining tick.
         """
         status = self.status()
         self._check_transitions(status)
         return status
 
     def _check_transitions(self, status: dict[str, Any] | None = None) -> None:
-        """Отправить уведомление на смене состояния, а не на каждом тике."""
+        """Send a notification on a state change, not on every tick."""
         if not self.notifier.enabled:
             return
         status = status or self.status()
         edges = {
             "breaker": (
                 status["breaker"] == "open",
-                "цепь Grok разомкнута — пайплайн не покупает",
-                "цепь Grok замкнулась, работа продолжается",
+                "Grok circuit opened — pipeline is not buying",
+                "Grok circuit closed, work continues",
             ),
             "halted": (
                 bool(status["halted"]),
-                f"дневной лимит убытка выбран ({self.risk.daily_loss:.4f} SOL), "
-                "торговли сегодня не будет",
-                "новые сутки, торговля возобновлена",
+                f"daily loss limit spent ({self.risk.daily_loss:.4f} SOL), "
+                "no trading today",
+                "new day, trading resumed",
             ),
             "stalled": (
                 bool(status["stalled"]),
-                "поток лончей встал: нет событий из сокета",
-                "поток лончей восстановился",
+                "launch stream stalled: no events from the socket",
+                "launch stream recovered",
             ),
             "cooldown": (
                 bool(status["cooldown_left_seconds"]),
-                f"{self.risk.losing_streak} убытка подряд — пауза на "
-                f"{status['cooldown_left_seconds'] / 60:.0f} мин",
-                "пауза после серии убытков закончилась",
+                f"{self.risk.losing_streak} losses in a row — pause for "
+                f"{status['cooldown_left_seconds'] / 60:.0f} min",
+                "pause after a losing streak ended",
             ),
             "blind": (
                 bool(status["blind_positions"]),
-                f"нет цен по {status['blind_positions']} открытым позициям — "
-                "стоп-лосс и take-profit по ним сейчас не работают",
-                "цены по позициям снова приходят",
+                f"no prices for {status['blind_positions']} open positions — "
+                "stop-loss and take-profit on them are not working now",
+                "prices for positions are arriving again",
             ),
         }
         for name, (active, on_text, off_text) in edges.items():
@@ -439,7 +439,7 @@ class Pipeline:
             self._alerted[name] = active
 
     def _creator_verdict(self, token: Token) -> str | None:
-        """Причина не связываться с создателем этого токена, или None."""
+        """Reason not to deal with this token's creator, or None."""
         flt = self.config.filter
         verdict = self.reputation.verdict(token.creator, flt.block_creator_after_rugs)
         if verdict:
@@ -448,20 +448,20 @@ class Pipeline:
             same = [p.mint[:8] for p in self.risk.positions.values()
                     if p.creator == token.creator]
             if same:
-                # Два токена одного деплойера — это одна ставка, а не две:
-                # сливают их обычно вместе.
-                return f"у создателя уже открыта позиция ({', '.join(same)})"
+                # Two tokens from one deployer are one bet, not two:
+                # they usually rug together.
+                return f"creator already has an open position ({', '.join(same)})"
         return None
 
     def _save_reputation(self) -> None:
         self.reputation.save(self.config.ops.reputation_path)
 
     def prompt_versions(self) -> dict[str, str]:
-        """Версии промптов, с которыми принято это решение.
+        """Prompt versions this decision was made with.
 
-        Правка промпта меняет поведение агента, а записи в логе выглядят
-        одинаково. Без этой пометки подбор весов по логу сравнивает
-        решения двух разных ботов.
+        Editing a prompt changes agent behavior, while log records look
+        the same. Without this mark, tuning weights from the log compares
+        decisions from two different bots.
         """
         return {
             agent.name: agent.version
@@ -469,11 +469,11 @@ class Pipeline:
         }
 
     def _sync_counters(self) -> None:
-        """Перенести расход Grok в состояние, которое ляжет на диск."""
+        """Copy Grok spend into the state that will land on disk."""
         self.risk.grok_calls_today = self.grok_ops.budget.spent
 
     def status(self) -> dict[str, Any]:
-        """Снимок для /healthz и heartbeat. Ничего секретного не содержит."""
+        """Snapshot for /healthz and the heartbeat. Contains nothing secret."""
         stalled = (time.time() - self._last_event_at) > STALL_SECONDS
         breaker = self.grok_ops.breaker.state
         blind = bool(self.watcher.blind)
@@ -505,14 +505,14 @@ class Pipeline:
         }
 
     def _market_snapshot(self) -> dict[str, Any]:
-        """Наблюдения, уходящие тайминг-агенту. Только измеренное."""
+        """Observations going to the timing agent. Measured only."""
         data = self.pulse.snapshot()
         data.update({
-            "лончей_в_буфере": len(self.monitor.pending),
-            "открытых_позиций": self.risk.open_count,
-            "сделок_сегодня": self.risk.trades_today,
-            "pnl_за_день_sol": round(self.risk.realized_pnl_sol, 4),
-            "данных_мало": self.pulse.is_thin(),
+            "pending_launches": len(self.monitor.pending),
+            "open_positions": self.risk.open_count,
+            "trades_today": self.risk.trades_today,
+            "pnl_today_sol": round(self.risk.realized_pnl_sol, 4),
+            "sparse_data": self.pulse.is_thin(),
         })
         return data
 
@@ -522,7 +522,7 @@ class Pipeline:
         self.trade_log.skip(token, stage="monitor", reason=reason)
 
     async def _price(self, mint: str) -> Tick:
-        """Цена позиции плюс признак того, что токен уехал с кривой."""
+        """Position price plus a flag that the token left the curve."""
         state = await self.executor.curve(mint)
         if state is None:
             return Tick()
@@ -535,15 +535,15 @@ class Pipeline:
         reason: str = "stop_loss",
         fraction: float = 1.0,
     ) -> None:
-        """Выход из позиции целиком или частью: продать, посчитать, записать.
+        """Exit a position in full or in part: sell, compute, record.
 
-        Себестоимость делится пропорционально проданным токенам, поэтому
-        частичная фиксация не искажает результат оставшегося хвоста.
+        Cost basis is split in proportion to tokens sold, so a partial
+        take does not distort the remaining tail's result.
         """
         try:
             result = await self.executor.sell(position, fraction)
         except NotImplementedError as exc:
-            log.error("продажа не реализована, позиция %s остаётся открытой: %s",
+            log.error("sell not implemented, position %s stays open: %s",
                       position.mint[:8], exc)
             self.metrics.inc("sell_not_implemented")
             return
@@ -578,7 +578,7 @@ class Pipeline:
             position.realized_sol += proceeds
             position.partials += 1
             self.risk.register_partial(position.mint, pnl_sol=pnl)
-            log.info("частично закрыто %s: %.0f%% позиции, осталось %.4f SOL себестоимости",
+            log.info("partially closed %s: %.0f%% of position, %.4f SOL cost basis left",
                      position.mint[:8], share * 100, position.sol_spent)
 
         self.trade_log.close(position, exit_price=exit_price, pnl_sol=pnl, reason=reason,
@@ -586,10 +586,10 @@ class Pipeline:
         self.metrics.inc("closes" if final else "partial_closes")
         self.metrics.inc(f"exit_{reason}")
         self.metrics.gauge("open_positions", self.risk.open_count)
-        log.info("ЗАКРЫТО %s по правилу %s, PnL %+.4f SOL", position.mint[:8], reason, pnl)
+        log.info("CLOSED %s by rule %s, PnL %+.4f SOL", position.mint[:8], reason, pnl)
         self.notifier.notify(
             "close",
-            f"закрыт {position.symbol or position.mint[:8]} по правилу {reason}: "
+            f"closed {position.symbol or position.mint[:8]} by rule {reason}: "
             f"{pnl:+.4f} SOL ({change_pct:+.1f}%)",
             mint=position.mint, reason=reason, pnl_sol=round(pnl, 6),
             pnl_pct=round(change_pct, 2),
@@ -597,9 +597,9 @@ class Pipeline:
         if final and -change_pct >= self.config.filter.rug_loss_pct:
             self.notifier.notify(
                 "rug",
-                f"создатель {(position.creator or '?')[:8]} слил "
+                f"creator {(position.creator or '?')[:8]} rugged "
                 f"{position.symbol or position.mint[:8]} ({change_pct:+.1f}%) — "
-                "его следующие токены отсекаются на входе",
+                "their next tokens are skipped at entry",
                 creator=position.creator, mint=position.mint,
                 pnl_pct=round(change_pct, 2),
             )
@@ -607,44 +607,45 @@ class Pipeline:
 
 
 # --------------------------------------------------------------------------
-# Точка входа
+# Entry point
 # --------------------------------------------------------------------------
 
 
 LIVE_WARNING = """
 ================================================================
-  РЕЖИМ LIVE
+  LIVE MODE
 
-  Пайплайн будет отправлять РЕАЛЬНЫЕ транзакции реальным кошельком
-  из config.yaml. Мемкоины на бондинговой кривой теряют стоимость
-  полностью и обычно. Потолок на сделку {max_sol} SOL, дневной лимит
-  убытка {daily} SOL — это ограничители, а не гарантия.
+  The pipeline will send REAL transactions with the real wallet
+  from config.yaml. Memecoins on a bonding curve lose their value
+  completely and routinely. The per-trade ceiling is {max_sol} SOL,
+  the daily loss limit is {daily} SOL — these are guards, not a
+  guarantee.
 
-  Запуск в live требует флага --i-understand-the-risk.
+  A live start requires the --i-understand-the-risk flag.
 ================================================================
 """
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="grokbot-pumpfun")
-    parser.add_argument("--config", default="config.yaml", help="путь к конфигу")
+    parser.add_argument("--config", default="config.yaml", help="path to config")
     parser.add_argument("--check", action="store_true",
-                        help="проверить конфиг и выйти, ничего не запуская")
+                        help="check the config and exit, start nothing")
     parser.add_argument("--i-understand-the-risk", action="store_true",
-                        help="обязателен для запуска в режиме live")
+                        help="required to start in live mode")
     return parser.parse_args(argv)
 
 
 def load_and_check(args: argparse.Namespace) -> Config:
-    """Прочитать конфиг, проверить пригодность, объяснить отказ по-человечески."""
+    """Read the config, check fitness, explain a refusal in plain language."""
     path = Path(args.config)
     if not path.exists():
-        raise SystemExit(f"Конфига {path} нет. Скопируйте config.example.yaml в config.yaml.")
+        raise SystemExit(f"No config at {path}. Copy config.example.yaml to config.yaml.")
 
     try:
         config = Config.load(path)
     except Exception as exc:
-        raise SystemExit(f"Конфиг {path} не читается: {exc}") from exc
+        raise SystemExit(f"Config {path} is unreadable: {exc}") from exc
 
     try:
         warnings = config.check_ready()
@@ -652,7 +653,7 @@ def load_and_check(args: argparse.Namespace) -> Config:
         raise SystemExit(str(exc)) from exc
 
     for warning in warnings:
-        print(f"ВНИМАНИЕ: {warning}", file=sys.stderr)
+        print(f"WARNING: {warning}", file=sys.stderr)
 
     if config.is_live:
         print(LIVE_WARNING.format(
@@ -661,8 +662,8 @@ def load_and_check(args: argparse.Namespace) -> Config:
         ), file=sys.stderr)
         if not getattr(args, "i_understand_the_risk", False):
             raise SystemExit(
-                "Отказ: mode: live без флага --i-understand-the-risk. "
-                "Либо верните mode: dry-run, либо подтвердите флагом."
+                "Refused: mode: live without --i-understand-the-risk. "
+                "Either set mode: dry-run, or confirm with the flag."
             )
     return config
 
@@ -674,7 +675,7 @@ async def amain(argv: list[str] | None = None) -> int:
 
     if args.check:
         print(json.dumps(config.redacted(), ensure_ascii=False, indent=2))
-        print("\nКонфиг пригоден для запуска.", file=sys.stderr)
+        print("\nConfig is ready to start.", file=sys.stderr)
         return 0
 
     async with Pipeline(config) as pipeline:
@@ -684,8 +685,8 @@ async def amain(argv: list[str] | None = None) -> int:
 def main(argv: list[str] | None = None) -> int:
     try:
         return asyncio.run(amain(argv))
-    except KeyboardInterrupt:            # если сигнал пришёл до установки обработчиков
-        print("\nостановлено", file=sys.stderr)
+    except KeyboardInterrupt:            # if the signal arrived before handlers were installed
+        print("\nstopped", file=sys.stderr)
         return 130
 
 

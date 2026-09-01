@@ -1,7 +1,7 @@
-"""Конфиг: переменные окружения, маскировка секретов и проверки перед стартом.
+"""Config: environment variables, secret masking, and pre-start checks.
 
-Смысл этих тестов в том, чтобы плохой конфиг падал на запуске, а не через
-час торговли, и чтобы ключ не утёк в лог через дамп модели.
+These tests exist so a bad config fails at start, not an hour into
+trading, and so the key does not leak into the log via a model dump.
 """
 
 import json
@@ -19,12 +19,12 @@ def config(**overrides) -> Config:
     return Config.from_raw(raw, env={})
 
 
-# --- переменные окружения -------------------------------------------------
+# --- environment variables ------------------------------------------------
 
 
 def test_env_overrides_file():
-    cfg = Config.from_raw(GOOD, env={"GROKBOT_GROK_API_KEY": "xai-из-окружения"})
-    assert cfg.grok.key == "xai-из-окружения"
+    cfg = Config.from_raw(GOOD, env={"GROKBOT_GROK_API_KEY": "xai-from-env"})
+    assert cfg.grok.key == "xai-from-env"
 
 
 def test_env_can_switch_mode():
@@ -33,7 +33,7 @@ def test_env_can_switch_mode():
 
 
 def test_empty_env_value_does_not_override():
-    """Пустая переменная в docker-compose не должна затирать ключ из файла."""
+    """An empty docker-compose variable must not wipe the key from the file."""
     cfg = Config.from_raw(GOOD, env={"GROKBOT_GROK_API_KEY": ""})
     assert cfg.grok.key == "xai-1234567890abcdef"
 
@@ -45,20 +45,20 @@ def test_env_creates_missing_sections():
 
 def test_load_reads_yaml(tmp_path):
     path = tmp_path / "config.yaml"
-    path.write_text("mode: dry-run\ngrok:\n  api_key: xai-из-файла-1234\n")
+    path.write_text("mode: dry-run\ngrok:\n  api_key: xai-from-file-1234\n")
     cfg = Config.load(path, env={})
-    assert cfg.grok.key == "xai-из-файла-1234"
+    assert cfg.grok.key == "xai-from-file-1234"
 
 
-# --- секреты --------------------------------------------------------------
+# --- secrets --------------------------------------------------------------
 
 
 def test_secrets_never_appear_in_dump():
-    cfg = config(solana={"wallet_private_key": "5xПриватныйКлюч"},
+    cfg = config(solana={"wallet_private_key": "5xPrivateKey"},
                  data={"api_key": "data-secret-key"})
     dumped = json.dumps(cfg.model_dump(mode="json"), ensure_ascii=False)
     assert "xai-1234567890abcdef" not in dumped
-    assert "5xПриватныйКлюч" not in dumped
+    assert "5xPrivateKey" not in dumped
     assert "data-secret-key" not in dumped
 
 
@@ -68,7 +68,7 @@ def test_secrets_not_in_repr():
 
 
 def test_redacted_masks_but_keeps_shape():
-    cfg = config(solana={"wallet_private_key": "5xПриватныйКлюч"})
+    cfg = config(solana={"wallet_private_key": "5xPrivateKey"})
     redacted = cfg.redacted()
     assert redacted["grok"]["api_key"] == mask("xai-1234567890abcdef")
     assert "…" in redacted["grok"]["api_key"]
@@ -83,23 +83,23 @@ def test_summary_is_log_safe():
 
 
 def test_mask_hides_short_secrets():
-    assert mask("короткий") == "***"
-    assert mask("") == "<пусто>"
+    assert mask("shortone") == "***"
+    assert mask("") == "<empty>"
 
 
 def test_placeholder_detection():
     assert is_placeholder("xai-YOUR-KEY-HERE")
     assert is_placeholder("")
     assert is_placeholder("   ")
-    assert is_placeholder("<ключ сюда>")
+    assert is_placeholder("<key here>")
     assert not is_placeholder("xai-1234567890abcdef")
 
 
-# --- проверки перед стартом ----------------------------------------------
+# --- pre-start checks -----------------------------------------------------
 
 
 def test_example_config_is_rejected_as_is():
-    """config.example.yaml с плейсхолдерами не должен стартовать."""
+    """config.example.yaml with placeholders must not start."""
     cfg = Config.load("config.example.yaml", env={})
     errors, _ = cfg.problems()
     assert any("grok.api_key" in e for e in errors)
@@ -138,7 +138,7 @@ def test_nonsense_values_are_errors(section, patch, marker):
 def test_zero_weights_rejected():
     cfg = config(scoring={"weights": {"audit": 0, "narrative": 0, "timing": 0, "metrics": 0}})
     errors, _ = cfg.problems()
-    assert any("веса" in e for e in errors)
+    assert any("weights" in e for e in errors)
 
 
 def test_live_without_wallet_key_rejected():
@@ -149,13 +149,13 @@ def test_live_without_wallet_key_rejected():
 
 def test_live_with_http_rpc_rejected():
     cfg = config(mode="live",
-                 solana={"wallet_private_key": "5xРеальныйКлюч", "rpc_url": "http://rpc.local"})
+                 solana={"wallet_private_key": "5xRealKey", "rpc_url": "http://rpc.local"})
     errors, _ = cfg.problems()
     assert any("https" in e for e in errors)
 
 
 def test_live_with_everything_set_passes():
-    cfg = config(mode="live", solana={"wallet_private_key": "5xРеальныйКлюч"})
+    cfg = config(mode="live", solana={"wallet_private_key": "5xRealKey"})
     errors, _ = cfg.problems()
     assert errors == []
 
@@ -167,6 +167,6 @@ def test_warnings_do_not_block_start():
 
 
 def test_dry_run_ignores_wallet_key():
-    """В dry-run кошелёк не нужен: ключ не требуется вообще."""
+    """In dry-run the wallet is unused: no key is required at all."""
     errors, _ = config().problems()
     assert not any("wallet" in e for e in errors)

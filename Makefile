@@ -6,57 +6,57 @@ BIN := $(VENV)/bin
 CONFIG ?= config.yaml
 LOG ?= logs/trades.jsonl
 
-help:            ## показать цели
+help:            ## show targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | column -t -s "$$(printf '\t')"
 
-install:         ## venv и зависимости для запуска
+install:         ## venv and runtime dependencies
 	$(PY) -m venv $(VENV)
 	$(BIN)/pip install -U pip
 	$(BIN)/pip install -r requirements.txt
 
-dev: install     ## то же плюс линтер, типы, тесты
+dev: install     ## same plus linter, types, tests
 	$(BIN)/pip install -r requirements-dev.txt
 
-test:            ## прогнать тесты
+test:            ## run tests
 	$(BIN)/python -m pytest
 
-cov:             ## тесты с покрытием
+cov:             ## tests with coverage
 	$(BIN)/python -m pytest --cov=src --cov-report=term-missing
 
 lint:            ## ruff
 	$(BIN)/ruff check .
 
-fmt:             ## ruff с автоисправлением
+fmt:             ## ruff with autofix
 	$(BIN)/ruff check . --fix
 
 types:           ## mypy
 	$(BIN)/mypy src
 
-check: lint types test  ## всё, что гоняет CI
+check: lint types test  ## everything CI runs
 
-check-config:    ## проверить конфиг, ничего не запуская
+check-config:    ## validate config, start nothing
 	$(BIN)/python -m src.cli check --config $(CONFIG)
 
-doctor:          ## предполётная проверка окружения
+doctor:          ## pre-flight environment check
 	$(BIN)/python -m src.cli doctor --config $(CONFIG)
 
-curve:           ## во что обходится сделка на кривой
+curve:           ## what a trade on the curve costs
 	$(BIN)/python -m src.cli curve
 
-run:             ## запустить пайплайн (режим берётся из конфига)
+run:             ## start the pipeline (mode comes from the config)
 	$(BIN)/python -m src.cli run --config $(CONFIG)
 
-dashboard:       ## живой дашборд по логу
+dashboard:       ## live dashboard from the log
 	$(BIN)/python scripts/dashboard.py $(LOG) --watch 5
 
-replay:          ## сводка по логу
+replay:          ## log summary
 	$(BIN)/python scripts/replay.py $(LOG) --rotated
 
-tune:            ## подобрать веса и порог по логу
+tune:            ## tune weights and threshold from the log
 	$(BIN)/python scripts/tune.py $(LOG) --rotated
 
-docker:          ## собрать образ
+docker:          ## build the image
 	docker build -t grokbot-pumpfun:latest .
 
-clean:           ## убрать мусор сборки и кэши
+clean:           ## remove build junk and caches
 	rm -rf .pytest_cache .mypy_cache .ruff_cache **/__pycache__ .coverage

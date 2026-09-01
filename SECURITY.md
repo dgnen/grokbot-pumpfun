@@ -1,38 +1,40 @@
-# Безопасность
+# Security
 
-## Что этот код держит в руках
+## What this code holds
 
-Приватный ключ кошелька Solana, ключ Grok API, ключ провайдера данных и
-webhook уведомлений. Любой из них достаточен, чтобы потратить чужие
-деньги — кошелёк напрямую, остальные через счёт за использование.
+A Solana wallet private key, a Grok API key, a data-provider key, and
+a notification webhook. Any one of them is enough to spend someone
+else's money — the wallet directly, the rest through a usage bill.
 
-## Как они хранятся
+## How they are stored
 
-- Все четыре — `SecretStr`: не попадают в `repr`, в дамп модели, в
-  traceback и в `grokbot check`.
-- Предпочтительный способ передачи — переменные окружения `GROKBOT_*`, а
-  не файл. Образ Docker не содержит ключей вообще.
-- `config.yaml` и `.env` — в `.gitignore`. В репозиторий попадают только
-  шаблоны с плейсхолдерами, и CI отдельно проверяет, что шаблон с
-  плейсхолдерами не проходит проверку конфига.
+- All four are `SecretStr`: they do not appear in `repr`, the model
+  dump, the traceback, or `grokbot check`.
+- The preferred way to pass them is `GROKBOT_*` environment variables,
+  not a file. The Docker image contains no keys at all.
+- `config.yaml` and `.env` are in `.gitignore`. Only templates with
+  placeholders reach the repository, and CI separately checks that a
+  template with placeholders fails config validation.
 
-## Что стоит сделать у себя
+## What you should do on your side
 
-- Отдельный кошелёк только под бота, с суммой, которую не жалко.
-- `state/` и `logs/` — на диске, к которому нет доступа у посторонних:
-  в состоянии лежат открытые позиции, в логе — вся история решений.
-- `health_port` слушает `127.0.0.1` по умолчанию. Если выставляете его
-  наружу, закройте доступ: `/healthz` показывает открытые позиции и PnL.
-- Ключ Grok — с ограничением по расходу на стороне xAI. `ops` ограничивает
-  расход со стороны бота, но это не замена лимиту у провайдера.
+- A separate wallet only for the bot, with an amount you can afford to
+  lose.
+- `state/` and `logs/` on a disk strangers cannot read: state holds
+  open positions, the log holds the full decision history.
+- `health_port` listens on `127.0.0.1` by default. If you expose it,
+  lock it down: `/healthz` shows open positions and PnL.
+- A Grok key with a spend limit on the xAI side. `ops` limits spend
+  from the bot's side, but that is not a substitute for the provider
+  limit.
 
-## Если нашли уязвимость
+## If you found a vulnerability
 
-Не открывайте публичный issue с деталями. Напишите владельцу репозитория
-и дайте разумное время на исправление.
+Do not open a public issue with details. Write to the repository owner
+and give reasonable time to fix it.
 
-## Чего этот проект не обещает
+## What this project does not promise
 
-Здесь нет защиты от вредоносного конфига: кто может править `config.yaml`
-или переменные окружения процесса, тот может заставить бота торговать как
-угодно. Разграничение доступа к машине — на вашей стороне.
+There is no protection against a malicious config: whoever can edit
+`config.yaml` or the process environment can make the bot trade any
+way they want. Access control on the machine is on you.

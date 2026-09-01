@@ -1,14 +1,14 @@
-"""JSONL-логирование. Одна запись — одна строка.
+"""JSONL logging. One record — one line.
 
-Три типа записей:
-  buy   — покупка, с полным контекстом решения (скоринг, оценки всех
-          агентов, метрики, цена входа);
-  skip  — токен не прошёл, с указанием ступени, причины и детали;
-  close — закрытие позиции с PnL и временем удержания.
+Three record types:
+  buy   — a purchase, with the full decision context (scoring, every
+          agent's estimates, metrics, entry price);
+  skip  — the token did not pass, with stage, reason, and detail;
+  close — position close with PnL and hold time.
 
-Лог — единственный источник правды о том, что пайплайн делал и почему.
-Скоринг пишется разложенным по компонентам: без этого потом не понять,
-какой именно агент тянул решения вниз.
+The log is the only source of truth about what the pipeline did and why.
+Scoring is written broken down by component: without that, later you
+cannot tell which agent pulled decisions down.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 
 
 def setup_logging(config: Config) -> None:
-    """Человекочитаемый лог в stderr. JSONL пишется отдельно, в файл."""
+    """Human-readable log on stderr. JSONL is written separately, to a file."""
     logging.basicConfig(
         level=getattr(logging, config.logging.level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)-7s %(name)-16s %(message)s",
@@ -39,7 +39,7 @@ def setup_logging(config: Config) -> None:
 
 
 class TradeLog:
-    """Аппендер JSONL. Каждая запись флашится сразу — процесс может умереть."""
+    """JSONL appender. Each record is flushed immediately — the process may die."""
 
     def __init__(
         self,
@@ -65,13 +65,13 @@ class TradeLog:
             backups=config.logging.backups,
         )
 
-    # -- ротация -----------------------------------------------------------
+    # -- rotation ----------------------------------------------------------
 
     def rotate_if_needed(self) -> bool:
-        """Отрезать файл, когда он перерос порог. Реплей читает и .1, и .2.
+        """Cut the file when it outgrows the threshold. Replay reads .1 and .2.
 
-        Без этого JSONL за месяц непрерывной работы вырастает до размера,
-        который уже не открыть, и место кончается молча.
+        Without this, a month of continuous JSONL grows to a size that
+        will not open, and the disk fills in silence.
         """
         if not self.max_bytes or not self.path.exists():
             return False
@@ -85,17 +85,17 @@ class TradeLog:
             if source.exists():
                 os.replace(source, self.path.with_suffix(self.path.suffix + f".{index + 1}"))
         os.replace(self.path, self.path.with_suffix(self.path.suffix + ".1"))
-        log.info("лог %s достиг %d байт — повёрнут", self.path, self.max_bytes)
+        log.info("log %s reached %d bytes — rotated", self.path, self.max_bytes)
         return True
 
-    # -- запись ------------------------------------------------------------
+    # -- write -------------------------------------------------------------
 
     def _write(self, record: dict[str, Any]) -> dict[str, Any]:
-        """Записать строку. Сбой записи не останавливает торговлю.
+        """Write a line. A write failure does not stop trading.
 
-        Кончившееся место на диске — плохо, но не повод бросить открытые
-        позиции без присмотра. Пропущенные записи считаются, и по счётчику
-        видно, что лог неполон.
+        A full disk is bad, but not a reason to leave open positions
+        unwatched. Missed records are counted, and the counter shows
+        that the log is incomplete.
         """
         record.setdefault("ts", time.time())
         record.setdefault("mode", self.mode)
@@ -106,7 +106,7 @@ class TradeLog:
         except (OSError, TypeError, ValueError) as exc:
             self.write_failures += 1
             if self.write_failures in (1, 10, 100):
-                log.error("запись в %s не удалась (%d-я): %s",
+                log.error("write to %s failed (%d-th): %s",
                           self.path, self.write_failures, exc)
         return record
 
@@ -147,12 +147,12 @@ class TradeLog:
         )
 
     def intent(self, analysis: Analysis, *, size_sol: float) -> dict[str, Any]:
-        """Запись о намерении купить — до отправки транзакции.
+        """Record of a buy intent — before the transaction is sent.
 
-        Если процесс умрёт между исполнением и учётом позиции, на диске
-        останется след: намерение без покупки. На старте это видно, и
-        можно проверить кошелёк руками, а не обнаружить лишние токены
-        через неделю.
+        If the process dies between execution and booking the position,
+        a trace stays on disk: an intent with no buy. On start that is
+        visible, and the wallet can be checked by hand, instead of
+        discovering extra tokens a week later.
         """
         return self._write({
             "type": "intent",
@@ -219,20 +219,20 @@ class TradeLog:
             }
         )
 
-    # -- чтение ------------------------------------------------------------
+    # -- read --------------------------------------------------------------
 
     def read(self) -> Iterator[dict[str, Any]]:
         yield from read_log(self.path)
 
     def read_all(self) -> Iterator[dict[str, Any]]:
-        """Текущий файл вместе с повёрнутыми копиями, от старых к новым."""
+        """The current file plus rotated copies, oldest to newest."""
         for index in range(self.backups, 0, -1):
             yield from read_log(self.path.with_suffix(self.path.suffix + f".{index}"))
         yield from read_log(self.path)
 
 
 def read_log(path: str | Path) -> Iterator[dict[str, Any]]:
-    """Построчное чтение JSONL. Битые строки пропускаются с предупреждением."""
+    """Line-by-line JSONL read. Broken lines are skipped with a warning."""
     file = Path(path)
     if not file.exists():
         return
@@ -244,7 +244,7 @@ def read_log(path: str | Path) -> Iterator[dict[str, Any]]:
             try:
                 record = json.loads(line)
             except json.JSONDecodeError:
-                log.warning("%s:%d — строка не разобралась, пропущена", file, number)
+                log.warning("%s:%d — line did not parse, skipped", file, number)
                 continue
             if isinstance(record, dict):
                 yield record

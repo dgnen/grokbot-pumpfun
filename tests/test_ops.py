@@ -1,7 +1,7 @@
-"""Эксплуатационная обвязка: ограничители расхода Grok, метрики, health.
+"""Ops wrapper: Grok spend limiters, metrics, health.
 
-Сеть здесь настоящая только в тестах health-эндпоинта, и только на
-127.0.0.1 — наружу ничего не ходит.
+The network here is real only in the health-endpoint tests, and only
+on 127.0.0.1 — nothing goes outside.
 """
 
 import asyncio
@@ -49,7 +49,7 @@ def config() -> Config:
     return cfg
 
 
-# --- ведро токенов --------------------------------------------------------
+# --- token bucket ---------------------------------------------------------
 
 
 def test_limiter_allows_burst_then_throttles():
@@ -78,12 +78,12 @@ def test_limiter_does_not_overfill():
 
 
 async def test_limiter_serializes_calls():
-    limiter = RateLimiter(per_minute=60_000, burst=1)     # 1000/с, ждать почти не надо
+    limiter = RateLimiter(per_minute=60_000, burst=1)     # 1000/s, almost no waiting
     waited = [await limiter.acquire() for _ in range(5)]
     assert all(w >= 0 for w in waited)
 
 
-# --- предохранитель -------------------------------------------------------
+# --- circuit breaker ------------------------------------------------------
 
 
 def test_breaker_opens_after_threshold():
@@ -119,7 +119,7 @@ def test_breaker_closes_after_cooldown():
     clock.advance(59)
     assert breaker.is_open
     clock.advance(2)
-    assert not breaker.is_open          # разведочный вызов разрешён
+    assert not breaker.is_open          # the probe call is allowed
 
 
 def test_reopens_immediately_if_probe_fails():
@@ -128,13 +128,13 @@ def test_reopens_immediately_if_probe_fails():
     breaker.record_failure()
     breaker.record_failure()
     clock.advance(11)
-    assert not breaker.is_open          # полуоткрыто
-    breaker.record_failure()            # разведка не удалась
+    assert not breaker.is_open          # half-open
+    breaker.record_failure()            # the probe failed
     assert breaker.is_open
     assert breaker.trips == 2
 
 
-# --- дневной бюджет -------------------------------------------------------
+# --- daily budget ---------------------------------------------------------
 
 
 def test_budget_counts_down():
@@ -159,14 +159,14 @@ def test_budget_resets_next_day():
 
 
 def test_budget_restores_spent_count():
-    """После рестарта бюджет продолжается, а не начинается заново."""
+    """After a restart the budget continues, it does not start over."""
     budget = CallBudget(max_per_day=5, clock=FakeClock(), spent=4)
     assert budget.remaining == 1
     assert budget.try_spend()
     assert not budget.try_spend()
 
 
-# --- метрики --------------------------------------------------------------
+# --- metrics --------------------------------------------------------------
 
 
 def test_metrics_snapshot_and_prometheus():
@@ -184,7 +184,7 @@ def test_metrics_snapshot_and_prometheus():
     assert text.endswith("\n")
 
 
-# --- обвязка агентов ------------------------------------------------------
+# --- agent wiring ---------------------------------------------------------
 
 
 def failing_client(seen: list) -> httpx.AsyncClient:
@@ -196,7 +196,7 @@ def failing_client(seen: list) -> httpx.AsyncClient:
 
 
 def ok_client(seen: list) -> httpx.AsyncClient:
-    body = json.dumps({"approve": False, "reason": "нет", "flags": [], "confidence": 0.5})
+    body = json.dumps({"approve": False, "reason": "no", "flags": [], "confidence": 0.5})
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
@@ -217,12 +217,12 @@ async def test_open_breaker_stops_calling_grok(config):
     seen: list = []
     ops = GrokOps(config)
     async with CheckerAgent(config, failing_client(seen), ops) as agent:
-        await agent.run(analysis())          # 2 попытки, 2 сбоя -> цепь разомкнута
+        await agent.run(analysis())          # 2 attempts, 2 failures -> circuit opened
         assert ops.breaker.is_open
         before = len(seen)
         result = await agent.run(analysis())
-    assert len(seen) == before               # второй раз в сеть не пошли
-    assert result.approve is False           # и это отказ, а не пропуск
+    assert len(seen) == before               # the second time we did not go to the network
+    assert result.approve is False           # and that is a refusal, not a skip
     assert "agent_failure" in result.flags
 
 
@@ -234,7 +234,7 @@ async def test_exhausted_budget_stops_calling_grok(config):
         first = await agent.run(analysis())
         second = await agent.run(analysis())
     assert len(seen) == 1
-    assert first.reason == "нет"
+    assert first.reason == "no"
     assert second.approve is False
     assert ops.budget.remaining == 0
 
@@ -251,11 +251,11 @@ async def test_success_records_token_usage(config):
 
 
 async def test_agent_works_without_ops(config):
-    """Ограничители опциональны: без них агент ведёт себя как раньше."""
+    """The limiters are optional: without them the agent behaves as before."""
     seen: list = []
     async with CheckerAgent(config, ok_client(seen)) as agent:
         result = await agent.run(analysis())
-    assert result.reason == "нет"
+    assert result.reason == "no"
     assert len(seen) == 1
 
 
@@ -293,7 +293,7 @@ async def test_health_reports_ok_and_metrics():
         assert code == 200
         assert "grokbot_buys_total 1" in body
 
-        code, _ = await http_get(port, "/нет-такого")
+        code, _ = await http_get(port, "/no-such")
         assert code == 404
     finally:
         await server.stop()
@@ -314,14 +314,14 @@ async def test_health_survives_broken_provider():
     port = free_port()
 
     def provider():
-        raise RuntimeError("состояние не собралось")
+        raise RuntimeError("status snapshot failed")
 
     server = HealthServer("127.0.0.1", port, provider, Metrics())
     await server.start()
     try:
         code, body = await http_get(port, "/healthz")
         assert code == 503
-        assert "состояние не собралось" in body
+        assert "status snapshot failed" in body
     finally:
         await server.stop()
 
@@ -332,13 +332,13 @@ async def test_disabled_health_does_not_listen():
     await server.stop()
 
 
-# --- остановка ------------------------------------------------------------
+# --- shutdown -------------------------------------------------------------
 
 
 async def test_drain_waits_for_quick_tasks():
     async def quick() -> str:
         await asyncio.sleep(0.01)
-        return "готово"
+        return "done"
 
     tasks = {asyncio.create_task(quick()) for _ in range(3)}
     done, cancelled = await drain(tasks, grace=1.0)

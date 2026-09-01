@@ -1,4 +1,4 @@
-"""JSONL-лог: ротация и чтение. Процесс живёт сутками, файл растёт всегда."""
+"""JSONL log: rotation and reading. The process lives for days, the file always grows."""
 
 import json
 
@@ -46,18 +46,18 @@ def test_rotation_keeps_only_configured_backups(trade_log):
 
 
 def test_read_all_spans_rotated_files(tmp_path):
-    # порог подобран так, чтобы поворот случился, но ни одна копия не
-    # успела вытесниться: проверяем склейку, а не вытеснение
+    # threshold is set so rotation happens but no copy is evicted yet:
+    # we are checking the join, not eviction
     log = TradeLog(tmp_path / "trades.jsonl", max_bytes=2000, backups=3)
     trade_log = log
     for index in range(30):
-        trade_log.skip(token(), stage="monitor", reason=f"причина-{index}")
+        trade_log.skip(token(), stage="monitor", reason=f"reason-{index}")
     assert trade_log.path.with_suffix(".jsonl.1").exists()
 
     reasons = [r["reason"] for r in trade_log.read_all()]
     assert len(reasons) == 30
-    assert reasons[0] == "причина-0"           # старые записи впереди
-    assert reasons[-1] == "причина-29"
+    assert reasons[0] == "reason-0"           # older records come first
+    assert reasons[-1] == "reason-29"
 
 
 def test_no_rotation_when_disabled(tmp_path):
@@ -75,7 +75,7 @@ def test_close_record_computes_pnl_percent(trade_log):
 
 def test_broken_line_is_skipped_not_fatal(tmp_path):
     path = tmp_path / "trades.jsonl"
-    path.write_text(json.dumps({"type": "skip", "mint": "A"}) + "\n{битая строка\n" +
+    path.write_text(json.dumps({"type": "skip", "mint": "A"}) + "\n{broken line\n" +
                     json.dumps({"type": "skip", "mint": "B"}) + "\n")
     assert [r["mint"] for r in read_log(path)] == ["A", "B"]
 
@@ -89,31 +89,31 @@ def test_from_config_uses_logging_section(tmp_path):
     assert (log.max_bytes, log.backups, log.mode) == (123, 2, "dry-run")
 
 
-# --- лог не роняет торговлю -----------------------------------------------
+# --- a log failure must not stop trading ----------------------------------
 
 
 def test_write_failure_is_counted_not_raised(tmp_path, caplog):
-    """Кончившееся место на диске — плохо, но не повод бросить открытые
-    позиции без присмотра."""
-    log = TradeLog(tmp_path / "не-каталог" / "trades.jsonl")
-    log.path = tmp_path / "нет" / "нет" / "trades.jsonl"     # каталога не существует
+    """A full disk is bad, but not a reason to leave open positions
+    unattended."""
+    log = TradeLog(tmp_path / "not-a-dir" / "trades.jsonl")
+    log.path = tmp_path / "missing" / "missing" / "trades.jsonl"     # the directory does not exist
 
     with caplog.at_level("ERROR"):
         record = log.skip(token(), stage="monitor", reason="few_buyers")
 
-    assert record["type"] == "skip"          # вызывающий получил свою запись
+    assert record["type"] == "skip"          # the caller got its record back
     assert log.write_failures == 1
-    assert "не удалась" in caplog.text
+    assert "failed" in caplog.text
 
 
 def test_repeated_failures_do_not_spam_the_log(tmp_path, caplog):
     log = TradeLog(tmp_path / "trades.jsonl")
-    log.path = tmp_path / "нет" / "trades.jsonl"
+    log.path = tmp_path / "missing" / "trades.jsonl"
     with caplog.at_level("ERROR"):
         for _ in range(5):
             log.skip(token(), stage="monitor", reason="few_buyers")
     assert log.write_failures == 5
-    assert caplog.text.count("не удалась") == 1     # только первая
+    assert caplog.text.count("failed") == 1     # only the first one
 
 
 def test_intent_record_precedes_purchase(tmp_path):

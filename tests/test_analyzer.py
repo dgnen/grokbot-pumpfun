@@ -1,6 +1,6 @@
-"""Анализатор: три параллельных запроса, разбор ответов и метрики.
+"""Analyzer: three parallel requests, response parsing, and metrics.
 
-Транспорт замокан, в сеть тесты не ходят.
+Transport is mocked; the tests do not go to the network.
 """
 
 import time
@@ -43,7 +43,7 @@ def client(handler) -> httpx.AsyncClient:
     return httpx.AsyncClient(base_url="http://test", transport=httpx.MockTransport(handler))
 
 
-# --- сеть -----------------------------------------------------------------
+# --- network --------------------------------------------------------------
 
 
 async def test_fetch_hits_three_endpoints(config):
@@ -55,21 +55,21 @@ async def test_fetch_hits_three_endpoints(config):
             return httpx.Response(200, json=[{"address": "h1", "share": 0.1}])
         if "/trades/all/" in request.url.path:
             return httpx.Response(200, json=[{"user": "w1", "txType": "buy", "solAmount": 0.5}])
-        return httpx.Response(200, json={"description": "кот"})
+        return httpx.Response(200, json={"description": "cat"})
 
     analyzer = Analyzer(config, client(handler))
     info, holders, trades = await analyzer.fetch("Mint1")
     assert sorted(seen) == ["/coins/Mint1", "/coins/Mint1/holders", "/trades/all/Mint1"]
-    assert info["description"] == "кот"
+    assert info["description"] == "cat"
     assert holders[0].address == "h1"
     assert trades[0].wallet == "w1"
 
 
 async def test_failed_request_degrades_to_empty(config):
-    """Провайдер молчит — метрики считаются по тому, что есть, а не падение."""
+    """The provider is silent — metrics are computed from what we have, not a crash."""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(500, json={"error": "нет"})
+        return httpx.Response(500, json={"error": "gone"})
 
     analyzer = Analyzer(config, client(handler))
     info, holders, trades = await analyzer.fetch("Mint1")
@@ -91,7 +91,7 @@ def test_client_outside_context_is_an_error(config):
         _ = Analyzer(config).client
 
 
-# --- разбор ---------------------------------------------------------------
+# --- parsing --------------------------------------------------------------
 
 
 def test_parse_holder_variants():
@@ -109,15 +109,15 @@ def test_parse_trade_normalizes_milliseconds():
 
 
 def test_enrich_fills_only_missing_fields():
-    tok = token(description="уже есть")
-    enrich_token(tok, {"description": "из сети", "twitter": "https://x.com/c",
+    tok = token(description="already set")
+    enrich_token(tok, {"description": "from network", "twitter": "https://x.com/c",
                        "virtual_sol_reserves": 30_000_000_000})
-    assert tok.description == "уже есть"
+    assert tok.description == "already set"
     assert tok.twitter == "https://x.com/c"
     assert tok.sol_in_curve == 30.0
 
 
-# --- метрики --------------------------------------------------------------
+# --- metrics --------------------------------------------------------------
 
 
 def healthy_trades(count: int = 30) -> list[Trade]:
@@ -132,7 +132,7 @@ def healthy_trades(count: int = 30) -> list[Trade]:
 def test_healthy_token_has_low_risk():
     holders = [Holder(address=f"h{i}", share=0.02) for i in range(20)]
     metrics = compute_metrics(token(twitter="t", telegram="tg", website="w",
-                                    description="описание длиннее двадцати символов"),
+                                    description="a description longer than twenty characters"),
                               holders, healthy_trades())
     assert metrics.risk_score < 7.0
     assert metrics.unique_wallets == 30
@@ -155,7 +155,7 @@ def test_concentrated_top5_is_vetoed():
 
 
 def test_veto_boundaries():
-    """Вето срабатывает ровно на пороге, а на волосок ниже — обычный счёт."""
+    """The veto fires exactly at the threshold; a hair below it is ordinary scoring."""
     at_threshold = compute_metrics(
         token(), [Holder(address="Creator1", share=0.25, is_creator=True)], healthy_trades()
     )
@@ -168,11 +168,11 @@ def test_veto_boundaries():
 
 
 def test_veto_ignores_good_metrics():
-    """Хорошая кривая и живые соцсети не выкупают создателя на четверти."""
+    """A healthy curve and live socials do not buy out a creator at a quarter."""
     holders = [Holder(address="Creator1", share=0.4, is_creator=True)]
     metrics = compute_metrics(
         token(twitter="t", telegram="tg", website="w",
-              description="описание длиннее двадцати символов"),
+              description="a description longer than twenty characters"),
         holders, healthy_trades(),
     )
     assert metrics.curve_health > 0.5
@@ -204,7 +204,7 @@ def test_socials_lower_risk():
     bare = compute_metrics(token(), [], healthy_trades())
     social = compute_metrics(
         token(twitter="t", telegram="tg", website="w",
-              description="описание длиннее двадцати символов"),
+              description="a description longer than twenty characters"),
         [], healthy_trades(),
     )
     assert social.risk_score < bare.risk_score
