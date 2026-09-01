@@ -1,7 +1,7 @@
-"""Агент 2: мем-потенциал.
+"""Agent 2: meme potential.
 
-Оценивает не ончейн, а сам мем: описание, тикер, картинку, ссылки. Вопрос
-один — есть ли шанс, что это разлетится, или это очередной клон вчерашнего.
+Evaluates not on-chain activity, but the meme itself: description, ticker, image, links. The
+question is one — is there a chance this will spread, or is it another clone of yesterday's.
 """
 
 from __future__ import annotations
@@ -12,30 +12,30 @@ from typing import ClassVar
 from ..models import NarrativeResult, Token
 from .base import JSON_ONLY, GrokAgent
 
-NARRATIVE_PROMPT = f"""Ты — аналитик мем-культуры криптотвиттера. Оцениваешь
-мем-потенциал только что запущенного токена на pump.fun.
+NARRATIVE_PROMPT = f"""You are an analyst of crypto-Twitter meme culture. You evaluate
+the meme potential of a token just launched on pump.fun.
 
-Дай четыре независимые оценки от 0.0 до 1.0:
-- trend_fit: попадание в текущий тренд. 1.0 — тема прямо сейчас на слуху,
-  0.0 — мёртвая или выдохшаяся тема, копия вчерашнего хайпа.
-- virality: виральность самого мема. Запоминается ли название, работает ли
-  картинка превью, есть ли шутка, которую хочется переслать.
-- community_signals: признаки живого сообщества. Реальные ссылки на
-  твиттер и телеграм, осмысленное описание, следы существовавшего до
-  запуска коммьюнити. Пустые или подставные ссылки — низкая оценка.
-- launch_timing: своевременность. Первый на новой теме — высоко, сотый
-  клон — низко, преждевременный заход на несозревшую тему — средне.
+Give four independent scores from 0.0 to 1.0:
+- trend_fit: fit with the current trend. 1.0 — the topic is being talked about right now,
+  0.0 — a dead or exhausted topic, a copy of yesterday's hype.
+- virality: virality of the meme itself. Is the name memorable, does the
+  preview image work, is there a joke people want to forward.
+- community_signals: signs of a living community. Real links to
+  Twitter and Telegram, a meaningful description, traces of a community that
+  existed before launch. Empty or fake links — low score.
+- launch_timing: timeliness. First on a new topic — high, the hundredth
+  clone — low, a premature move on an unripe topic — medium.
 
-Отсутствие данных — это низкая оценка, а не средняя. Клоны популярных
-тикеров оценивай строго.
+Missing data is a low score, not a medium one. Score clones of popular
+tickers strictly.
 
-Формат ответа:
+Response format:
 {{
   "trend_fit": 0.0-1.0,
   "virality": 0.0-1.0,
   "community_signals": 0.0-1.0,
   "launch_timing": 0.0-1.0,
-  "reasoning": "2-3 предложения, чем обоснованы оценки"
+  "reasoning": "2-3 sentences explaining the scores"
 }}
 
 {JSON_ONLY}"""

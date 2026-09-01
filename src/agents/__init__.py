@@ -1,4 +1,4 @@
-"""Агенты на Grok API: аудитор, нарратив, тайминг, адверсариальный чекер."""
+"""Grok API agents: auditor, narrative, timing, adversarial checker."""
 
 from .auditor import AuditorAgent
 from .base import GrokAgent, GrokAgentError

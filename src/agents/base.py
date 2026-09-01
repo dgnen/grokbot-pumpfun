@@ -1,12 +1,12 @@
-"""Базовый класс агента на Grok API.
+"""Base Grok API agent class.
 
-Вся общая механика вызова живёт здесь: сборка запроса, temperature=0,
-строгий разбор JSON, ретраи с экспоненциальной задержкой, таймаут.
+All shared call mechanics live here: request assembly, temperature=0,
+strict JSON parsing, retries with exponential backoff, timeout.
 
-Главное правило: при любой ошибке — таймаут, HTTP, кривой JSON, невалидная
-схема — агент возвращает МАКСИМАЛЬНО ПЕССИМИСТИЧНЫЙ результат, а не пустой
-и не «нейтральный». Сломавшаяся проверка равна отказу. Молчаливый пропуск
-на этом рынке стоит денег.
+Core rule: on any error — timeout, HTTP, malformed JSON, invalid
+schema — the agent returns the MOST PESSIMISTIC result, not empty
+and not "neutral". A broken check equals a refusal. A silent skip
+in this market costs money.
 """
 
 from __future__ import annotations
@@ -29,18 +29,18 @@ T = TypeVar("T", bound=BaseModel)
 
 
 class GrokAgentError(RuntimeError):
-    """Вызов Grok не удался после всех ретраев."""
+    """Grok call failed after all retries."""
 
 
 class GrokAgent:
-    """Один агент = один промпт + одна pydantic-схема ответа."""
+    """One agent = one prompt + one pydantic response schema."""
 
     name: ClassVar[str] = "agent"
-    # Версия промпта. Меняется вместе с текстом промпта и попадает в лог:
-    # без неё нельзя сравнивать статистику до и после его правки — это
-    # разные бота, а выглядят как один.
+    # Prompt version. Changes with the prompt text and is written to the log:
+    # without it you cannot compare stats before and after a prompt edit —
+    # those are different bots that look like one.
     version: ClassVar[str] = "0"
-    prompt: ClassVar[str] = ""            # системный промпт, константа модуля агента
+    prompt: ClassVar[str] = ""            # system prompt, constant of the agent module
     result_model: ClassVar[type[BaseModel]] = BaseModel
     use_checker_model: ClassVar[bool] = False
 
@@ -52,11 +52,11 @@ class GrokAgent:
     ) -> None:
         self.config = config
         self.grok = config.grok
-        self.ops = ops              # общие на процесс ограничители; None — без них
+        self.ops = ops              # process-wide limiters; None — without them
         self._client = client
         self._owns_client = client is None
 
-    # -- жизненный цикл ----------------------------------------------------
+    # -- lifecycle ---------------------------------------------------------
 
     @property
     def model(self) -> str:
@@ -79,48 +79,47 @@ class GrokAgent:
             self._client = httpx.AsyncClient(timeout=self.grok.timeout_seconds)
         return self._client
 
-    # -- переопределяется в наследниках ------------------------------------
+    # -- overridden in subclasses ------------------------------------------
 
     def build_user_message(self, *args: Any, **kwargs: Any) -> str:
         raise NotImplementedError
 
     def fallback(self, reason: str) -> Any:
-        """Пессимистичный результат. Наследник обязан вернуть худший случай."""
+        """Pessimistic result. The subclass must return the worst case."""
         raise NotImplementedError
 
-    # -- основной вход -----------------------------------------------------
+    # -- main entry --------------------------------------------------------
 
     async def run(self, *args: Any, **kwargs: Any) -> Any:
-        """Собрать запрос, сходить в Grok, разобрать ответ.
+        """Assemble the request, call Grok, parse the response.
 
-        Исключений наружу не выпускает: любой сбой превращается в
-        пессимистичный результат.
+        Never leaks exceptions: any failure becomes a pessimistic result.
         """
         try:
             message = self.build_user_message(*args, **kwargs)
         except Exception as exc:
-            log.warning("[%s] не удалось собрать промпт: %s", self.name, exc)
+            log.warning("[%s] failed to assemble prompt: %s", self.name, exc)
             return self.fallback(f"prompt_error: {exc}")
 
         try:
             raw = await self._call(message)
         except GrokAgentError as exc:
-            log.warning("[%s] вызов не удался: %s", self.name, exc)
+            log.warning("[%s] call failed: %s", self.name, exc)
             return self.fallback(str(exc))
 
         try:
             data = extract_json(raw)
         except ValueError as exc:
-            log.warning("[%s] ответ не разобрался как JSON: %s", self.name, exc)
+            log.warning("[%s] response did not parse as JSON: %s", self.name, exc)
             return self.fallback(f"parse_error: {exc}")
 
         try:
             return self.result_model.model_validate(data)
         except ValidationError as exc:
-            log.warning("[%s] ответ не сошёлся со схемой: %s", self.name, exc)
-            return self.fallback(f"schema_error: {exc.error_count()} полей")
+            log.warning("[%s] response did not match the schema: %s", self.name, exc)
+            return self.fallback(f"schema_error: {exc.error_count()} fields")
 
-    # -- транспорт ---------------------------------------------------------
+    # -- transport ---------------------------------------------------------
 
     def _payload(self, message: str) -> dict[str, Any]:
         return {
@@ -133,7 +132,7 @@ class GrokAgent:
         }
 
     async def _call(self, message: str) -> str:
-        """POST в Grok с ретраями. Возвращает текст ответа модели."""
+        """POST to Grok with retries. Returns the model's response text."""
         client = self._ensure_client()
         headers = {
             "Authorization": f"Bearer {self.grok.key}",
@@ -142,8 +141,8 @@ class GrokAgent:
         last_error: Exception | None = None
 
         for attempt in range(self.grok.max_retries):
-            # Ограничители спрашиваем на каждой попытке: цепь могла
-            # разомкнуться, а бюджет кончиться, пока мы ретраили.
+            # Ask the limiters on every attempt: the circuit may have
+            # opened, and the budget may have run out while we were retrying.
             if self.ops is not None:
                 blocked = self.ops.precheck(self.name)
                 if blocked:
@@ -170,10 +169,10 @@ class GrokAgent:
                 last_error = exc
                 self._failed()
             except (KeyError, IndexError, TypeError, ValueError) as exc:
-                last_error = GrokAgentError(f"неожиданная форма ответа: {exc}")
+                last_error = GrokAgentError(f"unexpected response shape: {exc}")
                 self._failed()
             except httpx.HTTPStatusError as exc:
-                # 4xx кроме 429 ретраить бессмысленно: ключ или запрос не те
+                # Retrying 4xx other than 429 is pointless: the key or the request is wrong
                 self._failed()
                 raise GrokAgentError(f"HTTP {exc.response.status_code}") from exc
             else:
@@ -181,17 +180,17 @@ class GrokAgent:
                     self.ops.record_success(self.name, body.get("usage"))
                 return content
 
-        raise GrokAgentError(f"после {self.grok.max_retries} попыток: {last_error}")
+        raise GrokAgentError(f"after {self.grok.max_retries} attempts: {last_error}")
 
     def _backoff(self, attempt: int) -> float:
-        """Экспоненциальная задержка с джиттером.
+        """Exponential backoff with jitter.
 
-        Джиттер важен: без него пачка агентов, стартовавшая одновременно,
-        ретраится тоже одновременно и добивает и без того больной API.
+        Jitter matters: without it a batch of agents that started together
+        retries together too and finishes off an already struggling API.
         """
         base = self.grok.retry_base_delay * (2 ** (attempt - 1))
         delay = base * (0.5 + random.random())
-        log.debug("[%s] ретрай %d через %.2fs", self.name, attempt, delay)
+        log.debug("[%s] retry %d in %.2fs", self.name, attempt, delay)
         return delay
 
     def _slot(self) -> Any:
@@ -205,7 +204,7 @@ class GrokAgent:
 
 
 class _NullSlot:
-    """Заглушка очереди для агента без ограничителей (тесты, одиночный вызов)."""
+    """Queue stub for an agent without limiters (tests, single call)."""
 
     async def __aenter__(self) -> None:
         return None
@@ -215,23 +214,23 @@ class _NullSlot:
 
 
 # --------------------------------------------------------------------------
-# Разбор ответа
+# Response parsing
 # --------------------------------------------------------------------------
 
 JSON_ONLY = (
-    "Ответь ТОЛЬКО валидным JSON указанной формы. "
-    "Без пояснений, без текста до и после, без markdown-обёртки и без ```."
+    "Reply with ONLY valid JSON of the specified shape. "
+    "No explanations, no text before or after, no markdown wrapper and no ```."
 )
 
 
 def extract_json(text: str) -> dict[str, Any]:
-    """Достать JSON-объект из ответа модели.
+    """Extract a JSON object from the model response.
 
-    Промпт требует чистый JSON, но модели иногда всё равно заворачивают его
-    в ```json. Снимаем обёртку и вырезаем первый сбалансированный объект.
+    The prompt requires bare JSON, but models still sometimes wrap it
+    in ```json. Strip the fence and cut out the first balanced object.
     """
     if not text or not text.strip():
-        raise ValueError("пустой ответ")
+        raise ValueError("empty response")
 
     cleaned = text.strip()
     if cleaned.startswith("```"):
@@ -246,15 +245,15 @@ def extract_json(text: str) -> dict[str, Any]:
         data = json.loads(_first_object(cleaned))
 
     if not isinstance(data, dict):
-        raise ValueError(f"ожидался объект, пришёл {type(data).__name__}")
+        raise ValueError(f"expected an object, got {type(data).__name__}")
     return data
 
 
 def _first_object(text: str) -> str:
-    """Первый сбалансированный {...} в строке."""
+    """First balanced {...} in the string."""
     start = text.find("{")
     if start == -1:
-        raise ValueError("в ответе нет JSON-объекта")
+        raise ValueError("no JSON object in the response")
     depth = 0
     in_string = False
     escaped = False
@@ -275,4 +274,4 @@ def _first_object(text: str) -> str:
             depth -= 1
             if depth == 0:
                 return text[start : i + 1]
-    raise ValueError("незакрытый JSON-объект")
+    raise ValueError("unclosed JSON object")

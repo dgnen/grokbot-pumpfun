@@ -1,12 +1,12 @@
-"""Агент 4: адверсариальная проверка.
+"""Agent 4: adversarial check.
 
-Последний рубеж перед деньгами и единственный, кто работает на сильной
-модели. Ему запрещено искать причины купить: он получает выводы всех
-предыдущих агентов и ищет, где они противоречат друг другу и что они
-пропустили.
+The last line before money and the only one that runs on the strong
+model. It is forbidden to look for reasons to buy: it receives the conclusions of all
+previous agents and looks for where they contradict each other and what they
+missed.
 
-approve: false — это нормальный, ожидаемый исход. Ошибка вызова тоже
-превращается в approve: false.
+approve: false is a normal, expected outcome. A call error also
+becomes approve: false.
 """
 
 from __future__ import annotations
@@ -18,40 +18,40 @@ from ..curve import buy_quote
 from ..models import Analysis, CheckerResult
 from .base import JSON_ONLY, GrokAgent
 
-CHECKER_PROMPT = f"""Ты — риск-офицер, который подписывает или блокирует
-покупку мемкоина. Твоя работа — НЕ найти причины купить. Твоя работа —
-найти причины НЕ покупать.
+CHECKER_PROMPT = f"""You are a risk officer who signs off on or blocks
+a memecoin buy. Your job is NOT to find reasons to buy. Your job
+is to find reasons NOT to buy.
 
-Тебе дают полный разбор: метрики, вывод аудитора кошельков, оценку
-мем-потенциала, состояние рынка и итоговый скоринг.
+You are given a full review: metrics, the wallet auditor's conclusion, the
+meme-potential score, market state, and the final scoring.
 
-Ищи:
-1. Противоречия между сигналами. Высокий мем-потенциал при низкой органике
-   покупателей. Хорошая кривая при концентрации у топ-5. Сильный скоринг,
-   собранный одним компонентом при провале остальных.
-2. Красные флаги, которые предыдущие агенты не отметили или недооценили.
-3. Слабую доказательную базу: низкий confidence аудитора, мало сделок,
-   отсутствие данных при уверенных выводах.
-4. Рыночный фон, при котором даже хороший токен не поедет.
-5. Экономику самой сделки. В блоке "план" лежит то, что реально
-   произойдёт: размер заявки, во что обойдётся вход и немедленный выход
-   (стоимость_круга_pct), насколько своя же заявка сдвинет цену
-   (влияние_на_цену_pct), и где стоят выходы. Если стоимость круга
-   сопоставима с движением, ради которого затевается сделка, или заявка
-   двигает цену на проценты — это причина отказать, даже когда сам токен
-   выглядит прилично.
+Look for:
+1. Contradictions between signals. High meme potential with low organic
+   buyer share. A good curve with concentration in the top 5. Strong scoring
+   assembled from one component while the others fail.
+2. Red flags that previous agents did not mark or undervalued.
+3. Weak evidence: low auditor confidence, few trades,
+   missing data paired with confident conclusions.
+4. A market backdrop in which even a good token will not move.
+5. The economics of the trade itself. The "plan" block contains what will actually
+   happen: order size, what entry and immediate exit will cost
+   (round_trip_cost_pct), how much the order itself will move the price
+   (price_impact_pct), and where the exits sit. If the round-trip cost
+   is comparable to the move the trade is aiming for, or the order
+   moves the price by percentages — that is a reason to refuse, even when the token
+   itself looks decent.
 
-Правила решения:
-- Сомневаешься — approve: false.
-- Любой сработавший флаг аудитора при organic_buyer_share ниже 0.5 —
+Decision rules:
+- If in doubt — approve: false.
+- Any triggered auditor flag with organic_buyer_share below 0.5 —
   approve: false.
-- Не одобряй на основании одного сильного компонента.
+- Do not approve on the basis of one strong component.
 
-Формат ответа:
+Response format:
 {{
   "approve": true|false,
-  "reason": "одно-два предложения, главная причина решения",
-  "flags": ["короткие метки найденных проблем"],
+  "reason": "one or two sentences, the main reason for the decision",
+  "flags": ["short labels of problems found"],
   "confidence": 0.0-1.0
 }}
 
@@ -87,27 +87,27 @@ class CheckerAgent(GrokAgent):
             "narrative": analysis.narrative.model_dump() if analysis.narrative else None,
             "timing": analysis.timing.model_dump() if analysis.timing else None,
             "scores": analysis.scores.model_dump(),
-            "план": self._plan(analysis),
+            "plan": self._plan(analysis),
         }
         return json.dumps(payload, ensure_ascii=False)
 
     def _plan(self, analysis: Analysis) -> dict[str, Any]:
-        """Экономика сделки, которую собираемся совершить."""
+        """Economics of the trade we are about to make."""
         risk = self.config.risk
         plan: dict[str, Any] = {
-            "размер_sol": round(analysis.plan.size_sol, 6) if analysis.plan else None,
-            "одобрено_риском": analysis.plan.approved if analysis.plan else None,
-            "стоимость_круга_pct": analysis.metrics.round_trip_cost_pct,
-            "ликвидность_кривой_sol": analysis.metrics.curve_liquidity_sol,
+            "size_sol": round(analysis.plan.size_sol, 6) if analysis.plan else None,
+            "risk_approved": analysis.plan.approved if analysis.plan else None,
+            "round_trip_cost_pct": analysis.metrics.round_trip_cost_pct,
+            "curve_liquidity_sol": analysis.metrics.curve_liquidity_sol,
             "take_profit_pct": risk.take_profit_pct,
             "stop_loss_pct": risk.stop_loss_pct,
-            "лимит_удержания_мин": round(risk.max_hold_seconds / 60, 1),
+            "max_hold_minutes": round(risk.max_hold_seconds / 60, 1),
         }
         if analysis.curve is not None and analysis.plan is not None:
             quote = buy_quote(analysis.curve, analysis.plan.size_sol,
                               self.config.market.trade_fee_pct)
             if quote.ok:
-                plan["влияние_на_цену_pct"] = round(quote.impact_pct, 3)
+                plan["price_impact_pct"] = round(quote.impact_pct, 3)
         return plan
 
     def fallback(self, reason: str) -> CheckerResult:

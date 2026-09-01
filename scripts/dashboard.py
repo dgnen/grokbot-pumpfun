@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""CLI-дашборд по логу: что происходит прямо сейчас.
+"""CLI dashboard from the log: what is happening right now.
 
     python scripts/dashboard.py logs/trades.jsonl
-    python scripts/dashboard.py logs/trades.jsonl --watch 5   # обновлять раз в 5с
+    python scripts/dashboard.py logs/trades.jsonl --watch 5   # refresh every 5s
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ def render(path: str, tail: int) -> str:
     records = list(read_log(path))
     out: list[str] = []
     if not records:
-        return f"Лог {path} пуст или не найден."
+        return f"Log {path} is empty or not found."
 
     today = day_key(time.time())
     todays = [r for r in records if day_key(r.get("ts", 0)) == today]
@@ -58,11 +58,11 @@ def render(path: str, tail: int) -> str:
     mode = modes.most_common(1)[0][0] if modes else "?"
 
     out.append(rule(f"grokbot-pumpfun · {mode}"))
-    out.append(f"сегодня ({today} UTC): куплено {len(today_buys)}   "
-               f"пропущено {len(today_skips)}   закрыто {len(today_closes)}")
-    out.append(f"PnL сегодня: {today_pnl:+.4f} SOL      всего: {total_pnl:+.4f} SOL")
+    out.append(f"today ({today} UTC): bought {len(today_buys)}   "
+               f"skipped {len(today_skips)}   closed {len(today_closes)}")
+    out.append(f"PnL today: {today_pnl:+.4f} SOL      total: {total_pnl:+.4f} SOL")
 
-    out.append(rule(f"открытые позиции: {len(open_positions)}"))
+    out.append(rule(f"open positions: {len(open_positions)}"))
     if open_positions:
         for record in open_positions[-10:]:
             age = (time.time() - record.get("ts", 0)) / 60
@@ -70,18 +70,18 @@ def render(path: str, tail: int) -> str:
             out.append(
                 f"  {(record.get('symbol') or record['mint'])[:12]:<12} "
                 f"{record.get('size_sol', 0):.4f} SOL  score {score:.3f}  "
-                f"{age:6.1f} мин  {record.get('tx_hash', '')[:16]}"
+                f"{age:6.1f} min  {record.get('tx_hash', '')[:16]}"
             )
     else:
-        out.append("  нет")
+        out.append("  none")
 
     if today_skips:
-        out.append(rule("отсев сегодня"))
+        out.append(rule("today's skips"))
         reasons = Counter(r.get("reason", "?") for r in today_skips)
         for reason, count in reasons.most_common(6):
             out.append(f"  {reason[:30]:<30} {count:>5}")
 
-    out.append(rule(f"последние события ({tail})"))
+    out.append(rule(f"latest events ({tail})"))
     for record in records[-tail:]:
         out.append("  " + format_event(record))
     out.append(rule())
@@ -104,10 +104,10 @@ def format_event(record: dict) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="CLI-дашборд по логу пайплайна")
+    parser = argparse.ArgumentParser(description="CLI dashboard from the pipeline log")
     parser.add_argument("log", nargs="?", default="logs/trades.jsonl")
-    parser.add_argument("--tail", type=int, default=12, help="сколько последних событий показать")
-    parser.add_argument("--watch", type=float, default=0.0, help="обновлять раз в N секунд")
+    parser.add_argument("--tail", type=int, default=12, help="how many latest events to show")
+    parser.add_argument("--watch", type=float, default=0.0, help="refresh every N seconds")
     args = parser.parse_args()
 
     if not args.watch:
