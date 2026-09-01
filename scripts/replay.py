@@ -114,7 +114,7 @@ def main() -> int:
                 continue                       # stage filtered nobody
             remaining -= dropped
             share = f"{remaining / seen * 100:5.1f}%" if seen else ""
-            rows.append((f"after «{label}»", remaining, share, f"−{dropped}"))
+            rows.append((f"after «{label}»", remaining, share, f"-{dropped}"))
         rows.append(("bought", len(buys),
                      f"{len(buys) / seen * 100:5.1f}%" if seen else "", ""))
         width = max(len(name) for name, _, _, _ in rows)

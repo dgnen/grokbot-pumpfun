@@ -69,7 +69,7 @@ async def test_buy_pays_worse_than_quote():
 async def test_buy_tokens_match_the_curve():
     executor = DryRunExecutor(config(), client(LIVE_CURVE))
     result = await executor.buy(token(), 0.4)
-    # price × amount = spent, to the cent
+    # price * amount = spent, to the cent
     assert result.price * result.token_amount == pytest.approx(result.sol_amount, rel=1e-12)
 
 

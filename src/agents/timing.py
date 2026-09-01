@@ -1,9 +1,10 @@
 """Agent 3: market moment.
 
-Evaluates not the token, but the backdrop: sentiment, whether a meme season is on, what
-volumes on pump.fun look like right now, whether there are anomalies. The answer is the same for all tokens
-within the window, so the result is cached for `timing_cache_seconds`
-(15 minutes by default) — otherwise every launch would pay for the same conclusion.
+Evaluates not the token, but the backdrop: sentiment, whether a meme season
+is on, what volumes on pump.fun look like right now, whether there are
+anomalies. The answer is the same for all tokens within the window, so the
+result is cached for `timing_cache_seconds` (15 minutes by default) —
+otherwise every launch would pay for the same conclusion.
 """
 
 from __future__ import annotations

@@ -187,7 +187,8 @@ async def test_timing_cache_expires(config):
 async def test_timing_failure_is_not_cached(config):
     """A failure must not lock the market assessment for a full 15 minutes."""
     calls: list = []
-    async with TimingAgent(config, client_raising(httpx.ConnectError("no network"), calls)) as agent:
+    client = client_raising(httpx.ConnectError("no network"), calls)
+    async with TimingAgent(config, client) as agent:
         first = await agent.get()
         assert "agent_failure" in first.anomalies
         assert agent._cached is None

@@ -165,7 +165,9 @@ def fmt_weights(weights: tuple[float, ...]) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Pick weights and a threshold from the log")
     parser.add_argument("log", nargs="?", default="logs/trades.jsonl")
-    parser.add_argument("--config", default="config.yaml", help="where to take current weights from")
+    parser.add_argument(
+        "--config", default="config.yaml", help="where to take current weights from"
+    )
     parser.add_argument("--rotated", action="store_true", help="include rotated copies")
     parser.add_argument("--fine", action="store_true", help="grid step 0.05 instead of 0.10")
     parser.add_argument("--top", type=int, default=10, help="how many sets to show")
@@ -220,7 +222,7 @@ def main() -> int:
     # -- weight grid -------------------------------------------------------
     step = 0.05 if args.fine else 0.10
     grid = simplex(step)
-    print(f"\nWeight search: {len(grid)} sets × {len(THRESHOLDS)} thresholds")
+    print(f"\nWeight search: {len(grid)} sets x {len(THRESHOLDS)} thresholds")
 
     # For each weight set keep only the best threshold: otherwise the top
     # of the table is the same set, cloned across the whole scale.

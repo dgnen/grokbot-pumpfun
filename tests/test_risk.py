@@ -278,7 +278,7 @@ def test_trailing_uses_live_price_as_peak(exits):
     """The peak is updated in the check itself: a spike up and back is not lost."""
     pos = position(entry=1.0, peak=1.0)
     assert exit_signal(pos, 2.19, exits, now=1.0) is None            # not yet take-profit
-    assert pos.peak_price == 1.0                                     # the function itself does not write
+    assert pos.peak_price == 1.0  # the function itself does not write
     pos.peak_price = 2.19
     assert exit_signal(pos, 1.4, exits, now=1.0).reason == "trailing_stop"
 
