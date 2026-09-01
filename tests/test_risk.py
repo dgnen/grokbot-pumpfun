@@ -264,7 +264,7 @@ def test_trailing_stop_fires_after_peak(exits):
     assert exit_signal(pos, 1.4, exits, now=1100.0) is None          # откат 30%
     signal = exit_signal(pos, 1.29, exits, now=1100.0)               # откат 35.5%
     assert signal is not None and signal.reason == "trailing_stop"
-    assert "от пика" in signal.detail
+    assert "from peak" in signal.detail
 
 
 def test_trailing_ignores_price_below_entry(exits):
