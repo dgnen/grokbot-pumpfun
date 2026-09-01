@@ -1,9 +1,9 @@
-"""REST-анализатор метрик токена. Вторая ступень, тоже без LLM.
+"""REST analyzer of token metrics. Second stage, also no LLM.
 
-Три запроса к провайдеру данных идут параллельно через asyncio.gather:
-карточка токена, топ-холдеры, последние сделки. Дальше всё считается кодом —
-агенты дорогие, и отдавать им токен, у которого создатель держит половину
-предложения, смысла нет.
+Three requests to the data provider run in parallel via asyncio.gather:
+token card, top holders, recent trades. After that everything is
+counted in code — agents are expensive, and handing them a token whose
+creator holds half the supply is pointless.
 """
 
 from __future__ import annotations
@@ -21,23 +21,24 @@ from .models import Config, Holder, MarketConfig, Token, TokenMetrics, Trade
 
 log = logging.getLogger(__name__)
 
-# Покупка в первые N секунд жизни токена считается снайпом.
+# A buy in the first N seconds of the token's life counts as a snipe.
 SNIPER_WINDOW_SECONDS = 15.0
 
-# Сколько последних сделок тянем для анализа.
+# How many recent trades we pull for analysis.
 TRADE_LIMIT = 200
 HOLDER_LIMIT = 50
 
-# Безусловные вето. Взвешенная сумма их размывает: токен с создателем на
-# четверти предложения набирал приемлемый риск за счёт хорошей кривой и
-# живых соцсетей. Такие условия не компенсируются ничем, поэтому они
-# выставляют максимальный риск, а не прибавляют к нему.
+# Unconditional vetoes. A weighted sum dilutes them: a token with the
+# creator on a quarter of supply used to score an acceptable risk on
+# the back of a healthy curve and live socials. Those conditions are
+# compensated by nothing, so they set risk to the max instead of
+# adding to it.
 CREATOR_SHARE_VETO = 0.25
 TOP5_SHARE_VETO = 0.80
 
 
 class Analyzer:
-    """Тянет сырые данные и сводит их в TokenMetrics."""
+    """Pulls raw data and folds it into TokenMetrics."""
 
     def __init__(self, config: Config, client: httpx.AsyncClient | None = None) -> None:
         self.config = config
@@ -65,10 +66,10 @@ class Analyzer:
     @property
     def client(self) -> httpx.AsyncClient:
         if self._client is None:
-            raise RuntimeError("Analyzer используется вне `async with`")
+            raise RuntimeError("Analyzer used outside `async with`")
         return self._client
 
-    # -- сеть --------------------------------------------------------------
+    # -- network -----------------------------------------------------------
 
     async def _get(self, path: str, **params: Any) -> Any:
         try:
@@ -76,11 +77,11 @@ class Analyzer:
             resp.raise_for_status()
             return resp.json()
         except Exception as exc:
-            log.warning("запрос %s не удался: %s", path, exc)
+            log.warning("request %s failed: %s", path, exc)
             return None
 
     async def fetch(self, mint: str) -> tuple[dict[str, Any], list[Holder], list[Trade]]:
-        """Карточка, холдеры и сделки — тремя параллельными запросами."""
+        """Card, holders, and trades — three parallel requests."""
         info, holders_raw, trades_raw = await asyncio.gather(
             self._get(f"/coins/{mint}"),
             self._get(f"/coins/{mint}/holders", limit=HOLDER_LIMIT),
@@ -93,7 +94,7 @@ class Analyzer:
         )
 
     async def analyze(self, token: Token) -> TokenMetrics:
-        """Полный проход: сходить в сеть и посчитать метрики."""
+        """Full pass: hit the network and compute metrics."""
         info, holders, trades = await self.fetch(token.mint)
         enrich_token(token, info)
         curve = state_from_any(info, token.market_cap_sol)
@@ -103,12 +104,12 @@ class Analyzer:
         )
 
     def passes(self, metrics: TokenMetrics) -> tuple[bool, str]:
-        """Отсечка по риск-скору и торгуемости. Возвращает (прошёл, причина)."""
+        """Cutoff by risk score and tradability. Returns (passed, reason)."""
         market = self.config.market
         if metrics.trade_count == 0:
             return False, "no_trade_data"
         if metrics.curve_liquidity_sol < market.min_curve_liquidity_sol:
-            # Из тонкой кривой не выйти: своя же продажа обвалит цену.
+            # No way out of a thin curve: your own sell will crash the price.
             return False, "curve_too_thin"
         if (metrics.round_trip_cost_pct
                 and metrics.round_trip_cost_pct > market.max_round_trip_cost_pct):
@@ -119,7 +120,7 @@ class Analyzer:
 
 
 # --------------------------------------------------------------------------
-# Разбор ответов провайдера
+# Parsing provider responses
 # --------------------------------------------------------------------------
 
 
@@ -139,7 +140,7 @@ def parse_holder(raw: dict[str, Any]) -> Holder:
 
 def parse_trade(raw: dict[str, Any]) -> Trade:
     ts = float(raw.get("timestamp") or 0.0)
-    if ts > 1e11:  # миллисекунды
+    if ts > 1e11:  # milliseconds
         ts /= 1000.0
     is_buy = raw.get("is_buy")
     if is_buy is None:
@@ -156,7 +157,7 @@ def parse_trade(raw: dict[str, Any]) -> Trade:
 
 
 def enrich_token(token: Token, info: dict[str, Any]) -> Token:
-    """Дописать в токен то, чего не было в событии сокета."""
+    """Fill in the token with what the socket event did not have."""
     if not info:
         return token
     token.description = token.description or info.get("description")
@@ -173,7 +174,7 @@ def enrich_token(token: Token, info: dict[str, Any]) -> Token:
 
 
 # --------------------------------------------------------------------------
-# Метрики (чистая функция, чтобы её можно было гонять без сети)
+# Metrics (a pure function, so it can be run without a network)
 # --------------------------------------------------------------------------
 
 
@@ -185,11 +186,11 @@ def compute_metrics(
     market: MarketConfig | None = None,
     planned_sol: float = 0.0,
 ) -> TokenMetrics:
-    """Свести сырьё в метрики и риск-скор 0..10.
+    """Fold the raw material into metrics and a 0..10 risk score.
 
-    Если известно состояние кривой, сюда же попадает стоимость входа и
-    выхода: на тонкой кривой она съедает движение, ради которого сделка
-    затевалась, и это надо видеть до решения, а не после.
+    If the curve state is known, the cost of getting in and out lands
+    here too: on a thin curve it eats the move the trade was for, and
+    that has to be visible before the decision, not after.
     """
     buys = [t for t in trades if t.is_buy]
     sells = [t for t in trades if not t.is_buy]
@@ -223,7 +224,7 @@ def compute_metrics(
     )
     veto = _veto_reason(creator_share, top5_share)
     if veto:
-        log.info("%s отсечён безусловно: %s", token.mint[:8], veto)
+        log.info("%s vetoed unconditionally: %s", token.mint[:8], veto)
         risk = 10.0
 
     liquidity = curve.real_sol if curve else 0.0
@@ -257,8 +258,8 @@ def _count_snipers(token: Token, buys: list[Trade]) -> int:
 
 
 def _wallet_diversity(buys: list[Trade]) -> float:
-    """Доля уникальных кошельков среди покупок, со штрафом за концентрацию
-    объёма в одном кошельке."""
+    """Share of unique wallets among buys, with a penalty for volume
+    concentrated in one wallet."""
     if not buys:
         return 0.0
     wallets = [t.wallet for t in buys if t.wallet]
@@ -288,8 +289,8 @@ def _social_signals(token: Token) -> float:
 
 
 def _curve_health(buys: list[Trade]) -> float:
-    """Ровный набор кривой лучше рывка: считаем разброс размеров покупок и
-    равномерность интервалов между ними."""
+    """An even curve fill beats a spike: we count the spread of buy
+    sizes and the evenness of gaps between them."""
     if len(buys) < 3:
         return 0.0
     amounts = [t.sol_amount for t in buys if t.sol_amount > 0]
@@ -316,11 +317,11 @@ def _curve_health(buys: list[Trade]) -> float:
 
 
 def _veto_reason(creator_share: float, top5_share: float) -> str | None:
-    """Условие, при котором остальные метрики уже не важны."""
+    """Condition under which the rest of the metrics no longer matter."""
     if creator_share >= CREATOR_SHARE_VETO:
-        return f"создатель держит {creator_share:.0%} предложения"
+        return f"creator holds {creator_share:.0%} of supply"
     if top5_share >= TOP5_SHARE_VETO:
-        return f"топ-5 кошельков держат {top5_share:.0%}"
+        return f"top-5 wallets hold {top5_share:.0%}"
     return None
 
 
@@ -334,16 +335,16 @@ def _risk_score(
     curve_health: float,
     trade_count: int,
 ) -> float:
-    """0..10, чем выше — тем хуже. Веса подобраны так, чтобы любой одиночный
-    красный флаг (создатель с половиной предложения, топ-5 под 80%) сам по
-    себе уводил токен за порог отсечки."""
+    """0..10, higher is worse. Weights are set so that any single red
+    flag (creator with half the supply, top-5 near 80%) by itself
+    pushes the token past the cutoff."""
     risk = 0.0
-    risk += min(3.0, top5_share * 3.75)          # >80% топ-5 -> 3.0
-    risk += min(3.0, creator_share * 10.0)       # >30% у создателя -> 3.0
-    risk += min(2.0, sniper_count * 0.25)        # 8 снайперов -> 2.0
+    risk += min(3.0, top5_share * 3.75)          # >80% top-5 -> 3.0
+    risk += min(3.0, creator_share * 10.0)       # >30% with the creator -> 3.0
+    risk += min(2.0, sniper_count * 0.25)        # 8 snipers -> 2.0
     risk += (1.0 - diversity) * 1.5
     risk += (1.0 - curve_health) * 1.0
     risk += (1.0 - socials) * 0.5
     if trade_count < 10:
-        risk += 1.0                              # данных мало, доверия меньше
+        risk += 1.0                              # little data, less trust
     return max(0.0, min(10.0, risk))

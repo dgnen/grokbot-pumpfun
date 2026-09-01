@@ -1,20 +1,22 @@
-"""Скоринг-матрица. Код, без LLM.
+"""Scoring matrix. Code, no LLM.
 
-Сводит четыре компонента — аудит, нарратив, тайминг, метрики — в одно
-число 0..1 с весами из конфига. Это дешёвый гейт перед дорогим чекером:
-всё, что не дотянуло до `filter.min_total_score`, логируется как skip с
-разбивкой по компонентам и до grok-4 не доходит.
+Folds four components — audit, narrative, timing, metrics — into one
+0..1 number with weights from the config. This is a cheap gate before
+the expensive checker: anything that did not reach
+`filter.min_total_score` is logged as a skip with a per-component
+breakdown and never reaches grok-4.
 
-Веса из конфига нормализуются: если пользователь напишет 0.5/0.5/0.5/0.5,
-итог всё равно останется в диапазоне 0..1, а пропорции сохранятся.
+Weights from the config are normalized: if the user writes
+0.5/0.5/0.5/0.5, the total still stays in 0..1, and the ratios hold.
 """
 
 from __future__ import annotations
 
 from .models import Analysis, Config, Scores, ScoringWeights
 
-# Компоненты, которых нет (агент не отработал), считаются нулём — не
-# средним и не «пропустить компонент». Отсутствие сигнала не аргумент за.
+# Components that are missing (the agent did not run) count as zero —
+# not as the average and not as "skip the component". Absence of a
+# signal is not an argument for.
 MISSING_COMPONENT = 0.0
 
 
@@ -27,13 +29,13 @@ def normalized_weights(weights: ScoringWeights) -> dict[str, float]:
     }
     total = sum(raw.values())
     if total <= 0:
-        # Вырожденный конфиг: равные веса лучше деления на ноль.
+        # Degenerate config: equal weights beat a divide by zero.
         return dict.fromkeys(raw, 0.25)
     return {key: value / total for key, value in raw.items()}
 
 
 def compute_scores(analysis: Analysis, config: Config) -> Scores:
-    """Разложенный скоринг по компонентам плюс итог."""
+    """Broken-out scoring by component plus the total."""
     weights = normalized_weights(config.scoring.weights)
 
     components = {
@@ -56,7 +58,7 @@ def compute_scores(analysis: Analysis, config: Config) -> Scores:
 
 
 def passes_threshold(scores: Scores, config: Config) -> tuple[bool, str]:
-    """Дотянул ли токен до похода к адверсариальному чекеру."""
+    """Did the token reach the trip to the adversarial checker."""
     threshold = config.filter.min_total_score
     if scores.total < threshold:
         return False, f"score_below_threshold ({scores.total:.3f} < {threshold:.3f})"
@@ -64,7 +66,7 @@ def passes_threshold(scores: Scores, config: Config) -> tuple[bool, str]:
 
 
 def weakest_component(scores: Scores) -> tuple[str, float]:
-    """Самый слабый компонент — уходит в лог как деталь причины пропуска."""
+    """The weakest component — goes into the log as skip-reason detail."""
     named = {
         "audit": scores.audit,
         "narrative": scores.narrative,

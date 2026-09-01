@@ -1,18 +1,19 @@
-"""Пульс рынка: то, что пайплайн видит своими глазами.
+"""Market pulse: what the pipeline sees with its own eyes.
 
-Агент-тайминг должен оценивать фон, но до этого модуля он получал на вход
-внутренние счётчики пайплайна — сколько токенов в буфере да сколько
-позиций открыто. По таким данным рыночный режим не определяется, и модель
-не столько оценивала, сколько сочиняла.
+The timing agent is supposed to judge the backdrop, but before this
+module it was fed the pipeline's internal counters — how many tokens
+are in the buffer and how many positions are open. Market regime cannot
+be read from that, and the model was inventing more than it was
+judging.
 
-Здесь собирается то, что известно достоверно, потому что мы это наблюдали
-сами: сколько лончей в минуту идёт через сокет, какая доля доживает до
-разбора, сколько SOL они успевают собрать, чем кончились наши последние
-сделки. Ничего внешнего, никаких котировок BTC — только собственное окно
-наблюдения, и агент прямо предупреждён, что видит именно его.
+Here we collect what is known for certain because we observed it
+ourselves: how many launches per minute come through the socket, what
+share reach review, how much SOL they gather, how our last trades
+ended. Nothing external, no BTC quotes — only our own observation
+window, and the agent is told outright that this is what it sees.
 
-Все окна скользящие: у процесса, живущего сутками, статистика за всё
-время бесполезна — она размазывает вчерашний штиль по сегодняшнему шторму.
+All windows are sliding: for a process that lives for days, all-time
+stats are useless — they smear yesterday's calm over today's storm.
 """
 
 from __future__ import annotations
@@ -24,15 +25,15 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 
-# Окно наблюдения за потоком лончей.
+# Observation window over the launch stream.
 LAUNCH_WINDOW_SECONDS = 900.0
 
-# Сколько последних закрытий учитывать в статистике исходов.
+# How many recent closes to keep in outcome stats.
 OUTCOME_MEMORY = 50
 
 
 class MarketPulse:
-    """Скользящая статистика потока лончей и собственных исходов."""
+    """Sliding stats of the launch stream and our own outcomes."""
 
     def __init__(
         self,
@@ -40,20 +41,20 @@ class MarketPulse:
         outcome_memory: int = OUTCOME_MEMORY,
     ) -> None:
         self.window = window_seconds
-        self.launches: deque[tuple[float, float]] = deque()   # (когда, SOL в кривой)
-        self.passed: deque[float] = deque()                   # когда дошёл до разбора
+        self.launches: deque[tuple[float, float]] = deque()   # (when, SOL in curve)
+        self.passed: deque[float] = deque()                   # when it reached review
         self.bought: deque[float] = deque()
         self.outcomes: deque[float] = deque(maxlen=outcome_memory)   # pnl_pct
-        self.rugs: deque[float] = deque(maxlen=outcome_memory)       # 1.0 слив, 0.0 нет
+        self.rugs: deque[float] = deque(maxlen=outcome_memory)       # 1.0 rug, 0.0 not
 
-    # -- вход --------------------------------------------------------------
+    # -- input -------------------------------------------------------------
 
     def record_launch(self, sol_in_curve: float = 0.0, now: float | None = None) -> None:
         self.launches.append((now or time.time(), max(0.0, sol_in_curve)))
         self._prune(now)
 
     def record_passed(self, now: float | None = None) -> None:
-        """Лонч пережил фильтр монитора и пошёл в платный разбор."""
+        """Launch survived the monitor filter and went to paid review."""
         self.passed.append(now or time.time())
         self._prune(now)
 
@@ -66,7 +67,7 @@ class MarketPulse:
         self.rugs.append(1.0 if -pnl_pct >= rug_loss_pct else 0.0)
 
     def seed_from_log(self, records: Iterable[dict[str, Any]], rug_loss_pct: float = 60.0) -> int:
-        """Поднять исходы из лога: после рестарта память не должна быть пустой."""
+        """Lift outcomes from the log: after a restart memory must not be empty."""
         closes = [r for r in records if r.get("type") == "close" and r.get("final", True)]
         memory = self.outcomes.maxlen or len(closes)
         for record in closes[-memory:]:
@@ -82,10 +83,10 @@ class MarketPulse:
         while self.bought and self.bought[0] < cutoff:
             self.bought.popleft()
 
-    # -- выход -------------------------------------------------------------
+    # -- output ------------------------------------------------------------
 
     def snapshot(self, now: float | None = None) -> dict[str, Any]:
-        """Числа для агента. Все — из собственного окна наблюдения."""
+        """Numbers for the agent. All from our own observation window."""
         now = now or time.time()
         self._prune(now)
         minutes = self.window / 60.0
@@ -94,30 +95,30 @@ class MarketPulse:
         launches = len(self.launches)
 
         data: dict[str, Any] = {
-            "окно_минут": round(minutes, 1),
-            "час_utc": datetime.fromtimestamp(now, tz=UTC).hour,
-            "лончей_в_минуту": round(launches / minutes, 2) if minutes else 0.0,
-            "лончей_в_окне": launches,
-            "доля_доживших_до_разбора": (
+            "window_minutes": round(minutes, 1),
+            "utc_hour": datetime.fromtimestamp(now, tz=UTC).hour,
+            "launches_per_minute": round(launches / minutes, 2) if minutes else 0.0,
+            "launches_in_window": launches,
+            "share_that_reached_review": (
                 round(len(self.passed) / launches, 4) if launches else 0.0
             ),
-            "покупок_в_окне": len(self.bought),
-            "медиана_sol_в_кривой": round(statistics.median(sols), 3) if sols else 0.0,
+            "buys_in_window": len(self.bought),
+            "median_sol_in_curve": round(statistics.median(sols), 3) if sols else 0.0,
         }
 
         if self.outcomes:
             wins = [pct for pct in self.outcomes if pct > 0]
             data.update({
-                "закрытых_сделок_в_памяти": len(self.outcomes),
-                "доля_прибыльных": round(len(wins) / len(self.outcomes), 4),
-                "медиана_результата_pct": round(statistics.median(self.outcomes), 2),
-                "доля_сливов": round(sum(self.rugs) / len(self.rugs), 4),
+                "closed_trades_in_memory": len(self.outcomes),
+                "win_rate": round(len(wins) / len(self.outcomes), 4),
+                "median_pnl_pct": round(statistics.median(self.outcomes), 2),
+                "rug_rate": round(sum(self.rugs) / len(self.rugs), 4),
             })
         else:
-            data["закрытых_сделок_в_памяти"] = 0
+            data["closed_trades_in_memory"] = 0
 
         return data
 
     def is_thin(self) -> bool:
-        """Поток почти пуст — оценивать по нему рынок нечестно."""
+        """The stream is almost empty — judging the market from it is unfair."""
         return len(self.launches) < 5
