@@ -1,8 +1,9 @@
-"""Математика кривой. Здесь проверяются тождества, а не примеры.
+"""Curve math. These tests check identities, not examples.
 
-Если этот модуль ошибается, ошибается всё: цена входа, PnL, подбор весов
-по логу и решение включать live. Поэтому тесты написаны как инварианты
-постоянного произведения, а не как «на таких числах получилось столько».
+If this module is wrong, everything is wrong: entry price, PnL, weight
+fitting from the log, and the decision to go live. So the tests are
+written as constant-product invariants, not as "these numbers came out
+to that".
 """
 
 import math
@@ -27,13 +28,13 @@ from src.curve import (
 
 
 def curve(real_sol: float = 15.0) -> CurveState:
-    """Кривая, собравшая `real_sol` настоящих SOL. Произведение сохранено."""
+    """A curve that has raised `real_sol` of real SOL. The product is preserved."""
     fresh = CurveState()
     sol = INITIAL_VIRTUAL_SOL + real_sol
     return CurveState(sol_reserves=sol, token_reserves=fresh.k / sol)
 
 
-# --- инварианты -----------------------------------------------------------
+# --- invariants -----------------------------------------------------------
 
 
 @pytest.mark.parametrize("real_sol", [0.0, 1.0, 15.0, 60.0])
@@ -55,14 +56,14 @@ def test_product_is_preserved_on_sell(real_sol):
 
 
 def test_round_trip_without_fees_returns_everything():
-    """На постоянном произведении проскальзывание входа компенсируется
-    выходом: без комиссии круг обязан быть бесплатным."""
+    """On a constant product, entry slippage is offset by the exit: with
+    no fee a round trip must be free."""
     state = curve()
     assert round_trip_cost_pct(state, 0.5, fee_pct=0.0) == pytest.approx(0.0, abs=1e-9)
 
 
 def test_round_trip_cost_is_exactly_two_fees():
-    """С комиссией f круг стоит ровно 1-(1-f)², и ни процентом больше."""
+    """With fee f a round trip costs exactly 1-(1-f)², and not a percent more."""
     for fee in (0.5, 1.0, 2.0):
         expected = (1.0 - (1.0 - fee / 100.0) ** 2) * 100.0
         assert round_trip_cost_pct(curve(), 0.3, fee_pct=fee) == pytest.approx(expected, abs=1e-9)
@@ -83,7 +84,7 @@ def test_seller_receives_below_spot():
 
 
 def test_two_small_buys_beat_one_big():
-    """Дробление заявки уменьшает влияние — иначе математика неверна."""
+    """Splitting an order reduces impact — otherwise the math is wrong."""
     state = curve()
     big = buy_quote(state, 1.0)
     first = buy_quote(state, 0.5)
@@ -91,7 +92,7 @@ def test_two_small_buys_beat_one_big():
     assert first.tokens + second.tokens == pytest.approx(big.tokens, rel=1e-12)
 
 
-# --- потолок по влиянию ---------------------------------------------------
+# --- impact cap -----------------------------------------------------------
 
 
 @pytest.mark.parametrize("real_sol", [0.0, 15.0, 80.0])
@@ -103,7 +104,7 @@ def test_impact_cap_is_exact(real_sol, target):
 
 
 def test_impact_cap_zero_when_fee_eats_allowance():
-    """Допуск не больше комиссии — покупать нельзя вообще, а не «чуть-чуть»."""
+    """If the allowance is no larger than the fee, you cannot buy at all, not "a little"."""
     assert max_sol_for_impact(curve(), max_impact_pct=1.0, fee_pct=1.0) == 0.0
     assert max_sol_for_impact(curve(), max_impact_pct=0.5, fee_pct=1.0) == 0.0
 
@@ -114,7 +115,7 @@ def test_impact_cap_grows_with_liquidity():
     assert thick > thin * 2
 
 
-# --- восстановление состояния --------------------------------------------
+# --- state recovery -------------------------------------------------------
 
 
 @pytest.mark.parametrize("real_sol", [0.0, 5.0, 40.0, 85.0])
@@ -128,8 +129,8 @@ def test_state_recovered_from_spot_price(real_sol):
 
 def test_state_from_api_converts_units():
     state = CurveState.from_api({
-        "virtual_sol_reserves": 45_000_000_000,        # лампорты
-        "virtual_token_reserves": 715_333_460_666_667,  # шесть знаков
+        "virtual_sol_reserves": 45_000_000_000,        # lamports
+        "virtual_token_reserves": 715_333_460_666_667,  # six decimals
     })
     assert state is not None
     assert state.sol_reserves == pytest.approx(45.0)
@@ -140,7 +141,7 @@ def test_state_from_api_converts_units():
 def test_state_from_api_rejects_junk():
     assert CurveState.from_api({}) is None
     assert CurveState.from_api({"virtual_sol_reserves": 0, "virtual_token_reserves": 1}) is None
-    assert CurveState.from_api({"virtual_sol_reserves": "нет", "virtual_token_reserves": 1}) is None
+    assert CurveState.from_api({"virtual_sol_reserves": "no", "virtual_token_reserves": 1}) is None
 
 
 def test_state_from_any_falls_back_to_market_cap():
@@ -153,7 +154,7 @@ def test_state_from_any_gives_up_without_data():
     assert state_from_any({}, market_cap_sol=0.0) is None
 
 
-# --- прогресс -------------------------------------------------------------
+# --- progress -------------------------------------------------------------
 
 
 def test_progress_excludes_virtual_reserve():
@@ -173,7 +174,7 @@ def test_state_progress_matches_helper():
     assert state.progress == pytest.approx(progress_from_sol(state.sol_reserves))
 
 
-# --- отказы ---------------------------------------------------------------
+# --- refusals -------------------------------------------------------------
 
 
 def test_zero_and_negative_orders_refused():
@@ -196,7 +197,7 @@ def test_fee_eating_whole_order_is_refused():
     assert not buy_quote(curve(), 1.0, fee_pct=100.0).ok
 
 
-# --- разное ---------------------------------------------------------------
+# --- misc -----------------------------------------------------------------
 
 
 def test_price_from_reserves_prefers_reserves_over_market_cap():
@@ -207,8 +208,8 @@ def test_price_from_reserves_prefers_reserves_over_market_cap():
 
 
 def test_fresh_curve_market_cap_is_sane():
-    """Новая кривая на pump.fun стоит около 28 SOL. Если константы уехали,
-    это первое, что сломается."""
+    """A fresh pump.fun curve is worth about 28 SOL. If the constants have
+    drifted, this is the first thing that breaks."""
     assert CurveState().spot_price * TOTAL_SUPPLY == pytest.approx(28.0, abs=1.0)
 
 

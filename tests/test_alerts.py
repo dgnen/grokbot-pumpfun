@@ -1,4 +1,4 @@
-"""Уведомления: выключены по умолчанию, торговле не мешают, не спамят."""
+"""Alerts: off by default, do not block trading, do not spam."""
 
 import asyncio
 
@@ -20,18 +20,18 @@ def collector() -> tuple[list[dict], httpx.AsyncClient]:
 
 
 def config(**overrides) -> AlertsConfig:
-    base = {"webhook_url": "https://hooks.example/секретный-токен", "max_per_minute": 20}
+    base = {"webhook_url": "https://hooks.example/secret-token", "max_per_minute": 20}
     base.update(overrides)
     return AlertsConfig(**base)
 
 
-# --- выключено по умолчанию ----------------------------------------------
+# --- off by default -------------------------------------------------------
 
 
 def test_disabled_without_url():
     notifier = Notifier(AlertsConfig())
     assert not notifier.enabled
-    assert notifier.notify("buy", "куплено") is None
+    assert notifier.notify("buy", "bought") is None
 
 
 def test_blank_url_counts_as_disabled():
@@ -42,20 +42,20 @@ def test_default_config_is_silent():
     assert not Notifier(Config().alerts).enabled
 
 
-# --- отправка -------------------------------------------------------------
+# --- sending --------------------------------------------------------------
 
 
 async def test_sends_configured_event():
     seen, client = collector()
     notifier = Notifier(config(events=["buy"]), client)
-    task = notifier.notify("buy", "куплен CAT на 0.4 SOL", mint="M1", score=0.8)
+    task = notifier.notify("buy", "bought CAT for 0.4 SOL", mint="M1", score=0.8)
     assert task is not None
     await task
 
     assert len(seen) == 1
     assert seen[0]["event"] == "buy"
-    assert "куплен CAT" in seen[0]["text"]
-    assert seen[0]["content"] == seen[0]["text"]     # Discord читает content
+    assert "bought CAT" in seen[0]["text"]
+    assert seen[0]["content"] == seen[0]["text"]     # Discord reads content
     assert seen[0]["fields"]["mint"] == "M1"
     assert notifier.sent == 1
 
@@ -63,7 +63,7 @@ async def test_sends_configured_event():
 async def test_event_not_in_list_is_skipped():
     seen, client = collector()
     notifier = Notifier(config(events=["buy"]), client)
-    assert notifier.notify("close", "закрыто") is None
+    assert notifier.notify("close", "closed") is None
     await notifier.aclose()
     assert seen == []
 
@@ -72,37 +72,37 @@ async def test_every_known_event_can_be_configured():
     seen, client = collector()
     notifier = Notifier(config(events=list(KNOWN_EVENTS), max_per_minute=100), client)
     for event in KNOWN_EVENTS:
-        notifier.notify(event, f"событие {event}")
+        notifier.notify(event, f"event {event}")
     await notifier.aclose()
     assert {r["event"] for r in seen} == set(KNOWN_EVENTS)
 
 
-# --- не мешает торговле ---------------------------------------------------
+# --- must not block trading -----------------------------------------------
 
 
 async def test_network_failure_is_swallowed():
     def handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("сети нет")
+        raise httpx.ConnectError("no network")
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     notifier = Notifier(config(events=["buy"]), client)
-    await notifier.notify("buy", "куплено")          # исключение наружу не идёт
+    await notifier.notify("buy", "bought")          # the exception does not leak out
     assert notifier.failed == 1
     assert notifier.sent == 0
 
 
 async def test_http_error_is_counted_not_raised():
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(500, text="упало")
+        return httpx.Response(500, text="down")
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     notifier = Notifier(config(events=["buy"]), client)
-    await notifier.notify("buy", "куплено")
+    await notifier.notify("buy", "bought")
     assert notifier.failed == 1
 
 
 async def test_notify_does_not_block_caller():
-    """Отправка уходит в фон: вызывающий не ждёт сеть."""
+    """The send goes to the background: the caller does not wait on the network."""
     started = asyncio.Event()
 
     async def slow(request: httpx.Request) -> httpx.Response:
@@ -112,20 +112,20 @@ async def test_notify_does_not_block_caller():
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(slow))
     notifier = Notifier(config(events=["buy"]), client)
-    task = notifier.notify("buy", "куплено")
-    assert not started.is_set()                      # вернулись до похода в сеть
+    task = notifier.notify("buy", "bought")
+    assert not started.is_set()                      # we returned before the network trip
     await task
     assert notifier.sent == 1
 
 
-# --- не спамит ------------------------------------------------------------
+# --- must not spam --------------------------------------------------------
 
 
 async def test_rate_limit_drops_the_excess():
     seen, client = collector()
     notifier = Notifier(config(events=["buy"], max_per_minute=3), client)
     for index in range(10):
-        notifier.notify("buy", f"токен {index}")
+        notifier.notify("buy", f"token {index}")
     await notifier.aclose()
 
     assert len(seen) == 3
@@ -144,13 +144,13 @@ async def test_window_is_sliding(monkeypatch):
     notifier.notify("buy", "2")
     assert notifier.notify("buy", "3") is None
 
-    clock["now"] += 61.0                             # минута прошла
+    clock["now"] += 61.0                             # a minute has passed
     assert notifier.notify("buy", "4") is not None
     await notifier.aclose()
     assert len(seen) == 3
 
 
-# --- секреты --------------------------------------------------------------
+# --- secrets --------------------------------------------------------------
 
 
 async def test_url_never_appears_in_logs(caplog):
@@ -160,22 +160,22 @@ async def test_url_never_appears_in_logs(caplog):
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     notifier = Notifier(config(events=["buy"]), client)
     with caplog.at_level("WARNING"):
-        await notifier.notify("buy", "куплено")
-    assert "секретный-токен" not in caplog.text
+        await notifier.notify("buy", "bought")
+    assert "secret-token" not in caplog.text
     assert "403" in caplog.text
 
 
 def test_url_not_in_repr():
-    assert "секретный-токен" not in repr(config())
+    assert "secret-token" not in repr(config())
 
 
-# --- завершение -----------------------------------------------------------
+# --- teardown -------------------------------------------------------------
 
 
 async def test_aclose_waits_for_pending():
     seen, client = collector()
     notifier = Notifier(config(events=["buy"]), client)
-    notifier.notify("buy", "последнее перед остановкой")
+    notifier.notify("buy", "last before stop")
     await notifier.aclose()
     assert len(seen) == 1
 
@@ -183,44 +183,44 @@ async def test_aclose_waits_for_pending():
 async def test_aclose_does_not_hang_on_stuck_send():
     async def stuck(request: httpx.Request) -> httpx.Response:
         await asyncio.sleep(3600)
-        raise AssertionError("недостижимо")
+        raise AssertionError("unreachable")
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(stuck))
     notifier = Notifier(config(events=["buy"]), client)
-    notifier.notify("buy", "зависшее")
+    notifier.notify("buy", "stuck")
     await asyncio.wait_for(notifier.aclose(grace=0.05), timeout=2)
 
 
 async def test_snapshot_reports_counters():
     _, client = collector()
     notifier = Notifier(config(events=["buy"], max_per_minute=1), client)
-    notifier.notify("buy", "первое")
-    notifier.notify("buy", "второе")
+    notifier.notify("buy", "first")
+    notifier.notify("buy", "second")
     await notifier.aclose()
     assert notifier.snapshot() == {"sent": 1, "dropped": 1, "failed": 0}
 
 
-# --- конфиг ---------------------------------------------------------------
+# --- config ---------------------------------------------------------------
 
 
 def test_unknown_event_rejected_before_start():
     cfg = Config.from_raw(
         {"grok": {"api_key": "xai-1234567890abcdef"},
-         "alerts": {"webhook_url": "https://hooks.example/x", "events": ["buy", "выдумка"]}},
+         "alerts": {"webhook_url": "https://hooks.example/x", "events": ["buy", "made-up"]}},
         env={},
     )
     errors, _ = cfg.problems()
-    assert any("выдумка" in e for e in errors)
+    assert any("made-up" in e for e in errors)
 
 
 def test_webhook_can_come_from_environment():
     cfg = Config.from_raw({"grok": {"api_key": "xai-1234567890abcdef"}},
-                          env={"GROKBOT_ALERT_WEBHOOK": "https://hooks.example/из-окружения"})
-    assert cfg.alerts.webhook_url.get_secret_value() == "https://hooks.example/из-окружения"
+                          env={"GROKBOT_ALERT_WEBHOOK": "https://hooks.example/from-env"})
+    assert cfg.alerts.webhook_url.get_secret_value() == "https://hooks.example/from-env"
 
 
 def test_redacted_masks_webhook():
     cfg = Config.from_raw(
         {"grok": {"api_key": "xai-1234567890abcdef"},
-         "alerts": {"webhook_url": "https://hooks.example/секретный-токен"}}, env={})
-    assert "секретный-токен" not in str(cfg.redacted())
+         "alerts": {"webhook_url": "https://hooks.example/secret-token"}}, env={})
+    assert "secret-token" not in str(cfg.redacted())

@@ -1,4 +1,4 @@
-"""Память о создателях: один и тот же деплойер не должен сливать нас дважды."""
+"""Creator memory: the same deployer must not rug us twice."""
 
 import time
 
@@ -16,11 +16,11 @@ def rug(book: ReputationBook, creator: str = "C1", pct: float = -85.0) -> None:
     book.record_close(creator, pnl_sol=-0.4, pnl_pct=pct, rug_loss_pct=60.0)
 
 
-# --- учёт -----------------------------------------------------------------
+# --- bookkeeping ----------------------------------------------------------
 
 
 def test_unknown_creator_is_not_blocked(book):
-    assert book.verdict("новый", block_after_rugs=1) is None
+    assert book.verdict("new", block_after_rugs=1) is None
     assert book.verdict(None, block_after_rugs=1) is None
 
 
@@ -46,7 +46,7 @@ def test_rug_threshold_boundary(book):
 
 def test_tolerance_configurable(book):
     rug(book)
-    assert book.verdict("C1", block_after_rugs=2) is None    # одного слива мало
+    assert book.verdict("C1", block_after_rugs=2) is None    # one rug is not enough
     rug(book)
     assert book.verdict("C1", block_after_rugs=2) is not None
 
@@ -57,7 +57,7 @@ def test_zero_disables_blocking(book):
 
 
 def test_profit_does_not_erase_history(book):
-    """Один удачный выход не отменяет того, что адрес уже сливал."""
+    """One profitable exit does not erase that the address already rugged."""
     rug(book)
     book.record_close("C1", pnl_sol=+1.0, pnl_pct=+150.0, rug_loss_pct=60.0)
     assert book.verdict("C1", block_after_rugs=1) is not None
@@ -71,7 +71,7 @@ def test_counters_accumulate(book):
     book.record_close("C1", pnl_sol=0.2, pnl_pct=40.0, rug_loss_pct=60.0)
     record = book.creators["C1"]
     assert (record.tokens_seen, record.tokens_bought, record.closed) == (2, 1, 1)
-    assert record.worst_pnl_pct == 0.0        # минусов не было
+    assert record.worst_pnl_pct == 0.0        # there were no losses
 
 
 def test_worst_result_is_remembered(book):
@@ -81,7 +81,7 @@ def test_worst_result_is_remembered(book):
     assert book.creators["C1"].worst_pnl_pct == -90.0
 
 
-# --- диск -----------------------------------------------------------------
+# --- disk -----------------------------------------------------------------
 
 
 def test_survives_restart(tmp_path):
@@ -95,12 +95,12 @@ def test_survives_restart(tmp_path):
 
 
 def test_missing_file_is_empty_book(tmp_path):
-    assert ReputationBook.load(tmp_path / "нет.json").creators == {}
+    assert ReputationBook.load(tmp_path / "missing.json").creators == {}
 
 
 def test_corrupt_file_does_not_crash(tmp_path):
     path = tmp_path / "creators.json"
-    path.write_text("{не json")
+    path.write_text("{not json")
     assert ReputationBook.load(path).creators == {}
 
 
@@ -113,20 +113,20 @@ def test_save_leaves_no_temp_files(tmp_path):
     assert [p.name for p in tmp_path.iterdir() if ".tmp" in p.name] == []
 
 
-# --- обслуживание ---------------------------------------------------------
+# --- maintenance ----------------------------------------------------------
 
 
 def test_forgets_stale_but_keeps_rugs(book):
-    book.observe("чистый")
-    rug(book, "плохой")
+    book.observe("clean")
+    rug(book, "bad")
     old = time.time() - 100 * 86_400
     for record in book.creators.values():
         record.last_seen = old
 
     forgotten = book.forget_older_than(days=30)
     assert forgotten == 1
-    assert "чистый" not in book.creators
-    assert "плохой" in book.creators          # сливы не забываем
+    assert "clean" not in book.creators
+    assert "bad" in book.creators          # we do not forget rugs
 
 
 def test_forget_disabled_by_zero(book):
@@ -138,11 +138,11 @@ def test_forget_disabled_by_zero(book):
 
 def test_eviction_prefers_clean_addresses(book, monkeypatch):
     monkeypatch.setattr("src.reputation.MAX_CREATORS", 5)
-    rug(book, "плохой")
+    rug(book, "bad")
     for index in range(20):
-        book.observe(f"чистый{index}")
+        book.observe(f"clean{index}")
     assert len(book.creators) <= 5
-    assert "плохой" in book.creators
+    assert "bad" in book.creators
 
 
 def test_summary_counts_bad(book):

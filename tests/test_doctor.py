@@ -1,5 +1,6 @@
-"""Предполётная проверка. Ни одна проверка не должна сама ходить в сеть
-в тестах — весь транспорт подменён."""
+"""Pre-flight check. No check should go to the network in tests —
+the whole transport is mocked.
+"""
 
 import asyncio
 import json
@@ -51,7 +52,7 @@ def failing_client(exc: Exception) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
-# --- конфиг и пути --------------------------------------------------------
+# --- config and paths -----------------------------------------------------
 
 
 def test_good_config_passes(config):
@@ -74,13 +75,13 @@ def test_warnings_do_not_fail(config):
 
 def test_paths_are_probed(config):
     checks = check_paths(config)
-    assert all(c.status == OK for c in checks if "пишется" in c.name)
+    assert all(c.status == OK for c in checks if "is writable" in c.name)
 
 
 def test_unwritable_path_fails(config):
-    config.ops.state_path = "/несуществующий-корень/state.json"
+    config.ops.state_path = "/nonexistent-root/state.json"
     checks = check_paths(config)
-    assert any(c.status == FAIL and "состояние" in c.name for c in checks)
+    assert any(c.status == FAIL and "state" in c.name for c in checks)
 
 
 # --- Grok -----------------------------------------------------------------
@@ -90,13 +91,13 @@ async def test_grok_ok(config):
     models = {"data": [{"id": "grok-4-fast"}, {"id": "grok-4"}]}
     check = await check_grok(config, client(200, models))
     assert check.status == OK
-    assert "xai-doct" not in check.detail          # ключ замаскирован
+    assert "xai-doct" not in check.detail          # the key is masked
 
 
 async def test_grok_rejected_key_fails(config):
     check = await check_grok(config, client(401))
     assert check.status == FAIL
-    assert "отвергнут" in check.detail
+    assert "rejected" in check.detail
 
 
 async def test_grok_missing_model_warns(config):
@@ -110,12 +111,12 @@ async def test_grok_server_error_warns(config):
 
 
 async def test_grok_unreachable_fails(config):
-    check = await check_grok(config, failing_client(httpx.ConnectError("сети нет")))
+    check = await check_grok(config, failing_client(httpx.ConnectError("no network")))
     assert check.status == FAIL
 
 
 async def test_grok_check_does_not_call_the_model(config):
-    """Проверка не должна тратить токены: только GET списка моделей."""
+    """The check must not spend tokens: only a GET of the model list."""
     seen: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -127,7 +128,7 @@ async def test_grok_check_does_not_call_the_model(config):
     assert "chat/completions" not in str(seen[0].url)
 
 
-# --- провайдер данных и RPC ----------------------------------------------
+# --- data provider and RPC ------------------------------------------------
 
 
 async def test_data_api_ok(config):
@@ -135,7 +136,7 @@ async def test_data_api_ok(config):
 
 
 async def test_data_api_unreachable_fails(config):
-    check = await check_data_api(config, failing_client(httpx.ConnectError("нет")))
+    check = await check_data_api(config, failing_client(httpx.ConnectError("gone")))
     assert check.status == FAIL
 
 
@@ -144,17 +145,17 @@ async def test_rpc_healthy(config):
 
 
 async def test_rpc_missing_is_only_warning_in_dry_run(config):
-    check = await check_rpc(config, failing_client(httpx.ConnectError("нет")))
+    check = await check_rpc(config, failing_client(httpx.ConnectError("gone")))
     assert check.status == WARN
 
 
 async def test_rpc_missing_fails_in_live(config):
     config.mode = "live"
-    check = await check_rpc(config, failing_client(httpx.ConnectError("нет")))
+    check = await check_rpc(config, failing_client(httpx.ConnectError("gone")))
     assert check.status == FAIL
 
 
-# --- сокет ----------------------------------------------------------------
+# --- socket ---------------------------------------------------------------
 
 
 class FakeSocket:
@@ -169,7 +170,7 @@ class FakeSocket:
         if self.messages:
             return self.messages.pop(0)
         await asyncio.sleep(10)
-        raise AssertionError("недостижимо")
+        raise AssertionError("unreachable")
 
     async def __aenter__(self) -> "FakeSocket":
         return self
@@ -200,13 +201,13 @@ async def test_socket_failure_fails(config, monkeypatch):
     import src.doctor as doctor_module
 
     def boom(*args, **kwargs):
-        raise OSError("сеть режет websocket")
+        raise OSError("network blocks websocket")
 
     monkeypatch.setattr(doctor_module.websockets, "connect", boom)
     assert (await check_socket(config, wait_seconds=0.1)).status == FAIL
 
 
-# --- режим и константы ----------------------------------------------------
+# --- mode and constants ---------------------------------------------------
 
 
 def test_dry_run_mode_is_ok(config):
@@ -214,39 +215,39 @@ def test_dry_run_mode_is_ok(config):
 
 
 def test_live_mode_flags_the_stub(config):
-    """Пока исполнение — заглушка, live не должен считаться готовым."""
+    """While execution is a stub, live must not count as ready."""
     config.mode = "live"
     checks = check_live_readiness(config)
     assert checks[0].status == WARN
-    assert any(c.status == FAIL and "заглушка" in c.detail for c in checks)
+    assert any(c.status == FAIL and "stub" in c.detail for c in checks)
 
 
 def test_curve_constants_look_sane():
     assert check_curve_constants().status == OK
 
 
-# --- отчёт ----------------------------------------------------------------
+# --- report ---------------------------------------------------------------
 
 
 def test_report_renders_and_counts():
     report = Report()
-    report.add(Check("раз", OK), Check("два", WARN, "мелочь"),
-               Check("три", FAIL, "беда", "почините"))
+    report.add(Check("one", OK), Check("two", WARN, "minor"),
+               Check("three", FAIL, "bad", "fix it"))
     text = report.render()
-    assert "✓ раз" in text and "! два" in text and "✗ три" in text
-    assert "почините" in text
-    assert "Не заработает" in text
+    assert "✓ one" in text and "! two" in text and "✗ three" in text
+    assert "fix it" in text
+    assert "Will not start" in text
     assert summary(report) == {"ok": 1, "warn": 1, "fail": 1}
 
 
 def test_clean_report_says_so():
     report = Report()
-    report.add(Check("раз", OK))
-    assert "можно запускать" in report.render()
+    report.add(Check("one", OK))
+    assert "ready to start" in report.render()
 
 
 async def test_offline_run_skips_network(config):
     report = await run_checks(config, skip_network=True)
     names = [c.name for c in report.checks]
     assert "Grok API" not in names
-    assert any("сеть" in name for name in names)
+    assert any("network" in name for name in names)
