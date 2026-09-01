@@ -1,20 +1,20 @@
-"""Единая точка входа: `grokbot <команда>`.
+"""Single entry point: `grokbot <command>`.
 
-До этого модуля запуск, проверка, реплей, дашборд и подбор весов жили в
-разных местах и вызывались по-разному. Одна команда с подкомандами — это
-не украшение: в runbook и в unit-файле должно стоять что-то одно, что
-человек вспомнит через месяц.
+Before this module, start, check, replay, dashboard, and weight tuning
+lived in different places and were invoked differently. One command with
+subcommands is not decoration: the runbook and the unit file should
+hold one thing a person will remember in a month.
 
-    grokbot run                # торговый цикл (dry-run по умолчанию)
-    grokbot check              # проверить конфиг и выйти
-    grokbot doctor             # предполётная проверка окружения
-    grokbot replay [лог]       # сводка по логу
-    grokbot dashboard [лог]    # живое состояние
-    grokbot tune [лог]         # подбор весов и порога
-    grokbot curve              # числа кривой: комиссия, влияние, потолок
+    grokbot run                # trading loop (dry-run by default)
+    grokbot check              # check the config and exit
+    grokbot doctor             # pre-flight environment check
+    grokbot replay [log]       # log summary
+    grokbot dashboard [log]    # live state
+    grokbot tune [log]         # tune weights and threshold
+    grokbot curve              # curve numbers: fee, impact, ceiling
 
-`python -m src.pipeline` продолжает работать: старые unit-файлы и cron не
-должны ломаться из-за переезда команды.
+`python -m src.pipeline` still works: old unit files and cron must not
+break because the command moved.
 """
 
 from __future__ import annotations
@@ -37,41 +37,41 @@ SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="grokbot",
-        description="Пайплайн мемкоин-трейдинга на pump.fun с агентами на Grok",
+        description="pump.fun memecoin trading pipeline with Grok agents",
     )
     sub = parser.add_subparsers(dest="command")
 
-    run = sub.add_parser("run", help="торговый цикл")
+    run = sub.add_parser("run", help="trading loop")
     run.add_argument("--config", default="config.yaml")
     run.add_argument("--i-understand-the-risk", action="store_true",
-                     help="обязателен для запуска в режиме live")
+                     help="required to start in live mode")
 
-    check = sub.add_parser("check", help="проверить конфиг и выйти")
+    check = sub.add_parser("check", help="check the config and exit")
     check.add_argument("--config", default="config.yaml")
 
-    doctor = sub.add_parser("doctor", help="предполётная проверка окружения")
+    doctor = sub.add_parser("doctor", help="pre-flight environment check")
     doctor.add_argument("--config", default="config.yaml")
-    doctor.add_argument("--offline", action="store_true", help="без сетевых проверок")
-    doctor.add_argument("--json", action="store_true", help="машиночитаемый вывод")
+    doctor.add_argument("--offline", action="store_true", help="skip network checks")
+    doctor.add_argument("--json", action="store_true", help="machine-readable output")
 
-    for name, help_text in (("replay", "сводка по логу"),
-                            ("dashboard", "живое состояние"),
-                            ("tune", "подбор весов и порога")):
+    for name, help_text in (("replay", "log summary"),
+                            ("dashboard", "live state"),
+                            ("tune", "tune weights and threshold")):
         script = sub.add_parser(name, help=help_text)
         script.add_argument("args", nargs=argparse.REMAINDER)
 
-    sub.add_parser("curve", help="числа кривой: комиссия, влияние, потолок заявки")
+    sub.add_parser("curve", help="curve numbers: fee, impact, order ceiling")
     return parser
 
 
 def load(config_path: str) -> Config:
     path = Path(config_path)
     if not path.exists():
-        raise SystemExit(f"Конфига {path} нет. Скопируйте config.example.yaml в config.yaml.")
+        raise SystemExit(f"No config at {path}. Copy config.example.yaml to config.yaml.")
     try:
         return Config.load(path)
     except Exception as exc:
-        raise SystemExit(f"Конфиг {path} не читается: {exc}") from exc
+        raise SystemExit(f"Config {path} is unreadable: {exc}") from exc
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -86,7 +86,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         }, ensure_ascii=False, indent=2))
     else:
         print()
-        print("  ПРЕДПОЛЁТНАЯ ПРОВЕРКА")
+        print("  PRE-FLIGHT CHECK")
         print("  " + "─" * 58)
         print(report.render())
         print()
@@ -101,30 +101,30 @@ def cmd_check(args: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return 1
     for warning in warnings:
-        print(f"ВНИМАНИЕ: {warning}", file=sys.stderr)
+        print(f"WARNING: {warning}", file=sys.stderr)
     print(json.dumps(config.redacted(), ensure_ascii=False, indent=2))
-    print("\nКонфиг пригоден для запуска.", file=sys.stderr)
+    print("\nConfig is ready to start.", file=sys.stderr)
     return 0
 
 
 def cmd_curve() -> int:
     numbers = sanity_check()
-    print("\n  Кривая pump.fun: во что обходится сделка на свежем токене\n")
-    print(f"    цена в начале кривой         {numbers['spot_price']:.12f} SOL")
-    print(f"    заявка 0.5 SOL двигает цену  {numbers['impact_0.5_sol']:.2f} %")
-    print(f"    вход и выход 0.5 SOL стоят   {numbers['round_trip_0.5_sol']:.2f} %")
-    print(f"    потолок заявки при 3%        {numbers['max_sol_for_3pct']:.3f} SOL")
-    print(f"    за 1 SOL дают токенов        {numbers['tokens_for_1_sol']:,.0f}")
-    print("\n  Константы взяты из программы pump.fun и могут устареть:")
-    print("  перед включением live сверьте их с ончейном.\n")
+    print("\n  pump.fun curve: what a trade on a fresh token costs\n")
+    print(f"    price at curve start             {numbers['spot_price']:.12f} SOL")
+    print(f"    0.5 SOL order moves the price    {numbers['impact_0.5_sol']:.2f} %")
+    print(f"    0.5 SOL round trip costs         {numbers['round_trip_0.5_sol']:.2f} %")
+    print(f"    order ceiling at 3%              {numbers['max_sol_for_3pct']:.3f} SOL")
+    print(f"    tokens for 1 SOL                 {numbers['tokens_for_1_sol']:,.0f}")
+    print("\n  Constants come from the pump.fun program and may go stale:")
+    print("  before enabling live, check them against the on-chain state.\n")
     return 0
 
 
 def run_script(name: str, args: list[str]) -> int:
-    """Запустить скрипт из scripts/ так, будто его вызвали напрямую."""
+    """Run a script from scripts/ as if it was invoked directly."""
     script = SCRIPTS / f"{name}.py"
     if not script.exists():
-        raise SystemExit(f"Скрипт {script} не найден")
+        raise SystemExit(f"Script {script} not found")
     sys.argv = [str(script), *args]
     try:
         runpy.run_path(str(script), run_name="__main__")

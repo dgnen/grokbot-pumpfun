@@ -1,14 +1,14 @@
-"""Эксплуатационная обвязка: ограничители, метрики, health, heartbeat.
+"""Ops wrapper: limiters, metrics, health, heartbeat.
 
-Всё, что нужно процессу, который работает сутками без присмотра, и ничего,
-что нужно торговой логике. Зависимостей, кроме стандартной библиотеки,
-здесь нет: health-эндпоинт написан на asyncio.start_server, а не на веб-
-фреймворке, чтобы контейнер оставался маленьким.
+Everything a process that runs for days unsupervised needs, and nothing
+the trading logic needs. No dependencies beyond the standard library:
+the health endpoint is written on asyncio.start_server, not a web
+framework, so the container stays small.
 
-Три ограничителя расхода Grok, каждый закрывает свой отказ:
-  * `RateLimiter`  — не долбить API чаще договорённого;
-  * `CallBudget`   — не сжечь дневной бюджет за один всплеск лончей;
-  * `CircuitBreaker` — перестать звонить туда, где всё равно не отвечают.
+Three Grok-spend limiters, each covering its own failure:
+  * `RateLimiter`  — do not hit the API faster than agreed;
+  * `CallBudget`   — do not burn the daily budget on one launch spike;
+  * `CircuitBreaker` — stop calling a place that is not answering anyway.
 """
 
 from __future__ import annotations
@@ -34,12 +34,12 @@ def utc_day(ts: float) -> str:
 
 
 # --------------------------------------------------------------------------
-# Метрики
+# Metrics
 # --------------------------------------------------------------------------
 
 
 class Metrics:
-    """Счётчики и мгновенные значения. Без внешнего сборщика — просто в память."""
+    """Counters and instantaneous values. No external collector — just memory."""
 
     def __init__(self, clock: Callable[[], float] = time.time) -> None:
         self.clock = clock
@@ -65,7 +65,7 @@ class Metrics:
         }
 
     def prometheus(self, prefix: str = "grokbot") -> str:
-        """Текстовая экспозиция для Prometheus. Без зависимостей."""
+        """Text exposition for Prometheus. No dependencies."""
         lines = [f"{prefix}_uptime_seconds {self.uptime_seconds:.1f}"]
         lines += [
             f"{prefix}_{_safe(name)}_total {count}"
@@ -83,12 +83,12 @@ def _safe(name: str) -> str:
 
 
 # --------------------------------------------------------------------------
-# Ограничители
+# Limiters
 # --------------------------------------------------------------------------
 
 
 class RateLimiter:
-    """Ведро токенов: не чаще `per_minute` вызовов, всплеск не больше `burst`."""
+    """Token bucket: no more than `per_minute` calls, burst no larger than `burst`."""
 
     def __init__(
         self,
@@ -96,7 +96,7 @@ class RateLimiter:
         burst: float | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        self.rate = max(0.001, per_minute) / 60.0        # токенов в секунду
+        self.rate = max(0.001, per_minute) / 60.0        # tokens per second
         self.capacity = burst if burst is not None else max(1.0, per_minute / 6.0)
         self.clock = clock
         self.tokens = self.capacity
@@ -109,14 +109,14 @@ class RateLimiter:
         self.updated = now
 
     def delay_for_next(self) -> float:
-        """Сколько ждать до следующего разрешённого вызова. 0 — можно сразу."""
+        """How long to wait until the next allowed call. 0 — go now."""
         self._refill()
         if self.tokens >= 1.0:
             return 0.0
         return (1.0 - self.tokens) / self.rate
 
     async def acquire(self) -> float:
-        """Дождаться права на вызов. Возвращает, сколько пришлось ждать."""
+        """Wait for the right to call. Returns how long we had to wait."""
         waited = 0.0
         async with self._lock:
             while True:
@@ -129,10 +129,11 @@ class RateLimiter:
 
 
 class CircuitBreaker:
-    """Размыкается после N сбоев подряд и не пускает вызовы `cooldown` секунд.
+    """Opens after N failures in a row and blocks calls for `cooldown` seconds.
 
-    Смысл не в экономии, а в том, чтобы при лежащем API пайплайн быстро и
-    честно отказывал (то есть не покупал), а не висел на таймаутах.
+    The point is not saving money, but that when the API is down the
+    pipeline should refuse quickly and honestly (i.e. not buy), not hang
+    on timeouts.
     """
 
     def __init__(
@@ -153,10 +154,10 @@ class CircuitBreaker:
         if self.opened_at is None:
             return False
         if self.clock() - self.opened_at >= self.cooldown:
-            # Пробуем снова: полуоткрытое состояние, один вызов на разведку.
+            # Try again: half-open, one probe call.
             self.opened_at = None
             self.consecutive_failures = self.threshold - 1
-            log.info("цепь Grok снова замкнута, пробуем разведочный вызов")
+            log.info("Grok circuit closed, trying a probe call")
             return False
         return True
 
@@ -180,12 +181,12 @@ class CircuitBreaker:
         if self.consecutive_failures >= self.threshold and self.opened_at is None:
             self.opened_at = self.clock()
             self.trips += 1
-            log.error("цепь Grok разомкнута: %d сбоев подряд, пауза %.0fs",
+            log.error("Grok circuit opened: %d failures in a row, pause %.0fs",
                       self.consecutive_failures, self.cooldown)
 
 
 class CallBudget:
-    """Потолок вызовов Grok в сутки. Сам сбрасывается в полночь UTC."""
+    """Ceiling on Grok calls per day. Resets itself at midnight UTC."""
 
     def __init__(
         self,
@@ -202,7 +203,7 @@ class CallBudget:
     def _roll(self) -> None:
         today = utc_day(self.clock())
         if today != self.day:
-            log.info("бюджет вызовов Grok сброшен: за %s потрачено %d", self.day, self.spent)
+            log.info("Grok call budget reset: on %s spent %d", self.day, self.spent)
             self.day = today
             self.spent = 0
             self._warned = False
@@ -216,24 +217,24 @@ class CallBudget:
         self._roll()
         if self.spent + amount > self.max_per_day:
             if not self._warned:
-                log.error("дневной бюджет вызовов Grok исчерпан (%d), до полуночи UTC "
-                          "агенты не вызываются", self.max_per_day)
+                log.error("daily Grok call budget exhausted (%d), until midnight UTC "
+                          "agents are not called", self.max_per_day)
                 self._warned = True
             return False
         self.spent += amount
         if self.remaining <= self.max_per_day // 10 and not self._warned:
-            log.warning("бюджет вызовов Grok на исходе: осталось %d из %d",
+            log.warning("Grok call budget running out: %d of %d left",
                         self.remaining, self.max_per_day)
         return True
 
 
 # --------------------------------------------------------------------------
-# Обвязка агентов
+# Agent wrapper
 # --------------------------------------------------------------------------
 
 
 class GrokOps:
-    """Общие на весь процесс ограничители и счётчики вызовов Grok."""
+    """Process-wide Grok call limiters and counters."""
 
     def __init__(self, config: Config, metrics: Metrics | None = None, spent: int = 0) -> None:
         ops = config.ops
@@ -246,18 +247,18 @@ class GrokOps:
         self.tokens_out = 0
 
     def precheck(self, agent: str) -> str | None:
-        """Причина не звонить в Grok прямо сейчас, или None."""
+        """Reason not to call Grok right now, or None."""
         if self.breaker.is_open:
             self.metrics.inc(f"grok_blocked_breaker_{agent}")
-            return f"цепь разомкнута, осталось {self.breaker.remaining_cooldown():.0f}s"
+            return f"circuit open, {self.breaker.remaining_cooldown():.0f}s left"
         if not self.budget.try_spend():
             self.metrics.inc(f"grok_blocked_budget_{agent}")
-            return f"дневной бюджет вызовов исчерпан ({self.budget.max_per_day})"
+            return f"daily call budget exhausted ({self.budget.max_per_day})"
         return None
 
     @asynccontextmanager
     async def slot(self, agent: str):
-        """Место в очереди: параллелизм и частота."""
+        """A place in the queue: concurrency and rate."""
         async with self.semaphore:
             waited = await self.limiter.acquire()
             if waited > 0:
@@ -290,17 +291,18 @@ class GrokOps:
 
 
 # --------------------------------------------------------------------------
-# Health-эндпоинт
+# Health endpoint
 # --------------------------------------------------------------------------
 
 StatusProvider = Callable[[], dict[str, Any]]
 
 
 class HealthServer:
-    """Минимальный HTTP: GET /healthz (JSON) и GET /metrics (Prometheus).
+    """Minimal HTTP: GET /healthz (JSON) and GET /metrics (Prometheus).
 
-    Ровно две ручки и никакого фреймворка. `status` в ответе решает код:
-    "ok" -> 200, всё остальное -> 503, чтобы оркестратор перезапустил.
+    Exactly two handles and no framework. `status` in the response picks
+    the code: "ok" -> 200, everything else -> 503, so the orchestrator
+    restarts.
     """
 
     def __init__(
@@ -320,7 +322,7 @@ class HealthServer:
         if not self.port:
             return None
         self._server = await asyncio.start_server(self._handle, self.host, self.port)
-        log.info("health-эндпоинт слушает http://%s:%d/healthz", self.host, self.port)
+        log.info("health endpoint listening on http://%s:%d/healthz", self.host, self.port)
         return self._server
 
     async def stop(self) -> None:
@@ -347,7 +349,7 @@ class HealthServer:
         except (TimeoutError, ConnectionError):
             pass
         except Exception as exc:
-            log.warning("health-запрос упал: %s", exc)
+            log.warning("health request failed: %s", exc)
         finally:
             writer.close()
 
@@ -357,7 +359,7 @@ class HealthServer:
         if path in ("/", "/healthz", "/health"):
             try:
                 status = self.provider()
-            except Exception as exc:            # провайдер не должен ронять health
+            except Exception as exc:            # the provider must not take down health
                 status = {"status": "error", "error": str(exc)}
             code = 200 if status.get("status") == "ok" else 503
             return json.dumps(status, ensure_ascii=False, indent=2), "application/json", code
@@ -370,7 +372,7 @@ class HealthServer:
 
 
 class Heartbeat:
-    """Периодическая строка живости в лог: по ней видно, что процесс дышит."""
+    """Periodic liveness line in the log: it shows the process is breathing."""
 
     def __init__(self, interval: float, provider: StatusProvider) -> None:
         self.interval = max(1.0, interval)
@@ -387,9 +389,9 @@ class Heartbeat:
         while True:
             await asyncio.sleep(self.interval)
             try:
-                log.info("жив: %s", self.line())
+                log.info("alive: %s", self.line())
             except Exception as exc:
-                log.warning("heartbeat не собрался: %s", exc)
+                log.warning("heartbeat failed to assemble: %s", exc)
 
     def start(self) -> asyncio.Task:
         self._task = asyncio.create_task(self.run(), name="heartbeat")
@@ -404,21 +406,21 @@ class Heartbeat:
 
 
 async def drain(tasks: set[asyncio.Task], grace: float) -> tuple[int, int]:
-    """Дать задачам в работе доделаться, остальные снять. (доделали, сняли)."""
+    """Let in-flight tasks finish, cancel the rest. (finished, cancelled)."""
     if not tasks:
         return 0, 0
-    log.info("останавливаемся: ждём %d задач в работе до %.0fs", len(tasks), grace)
+    log.info("stopping: waiting on %d in-flight tasks for up to %.0fs", len(tasks), grace)
     done, pending = await asyncio.wait(tasks, timeout=grace)
     for task in pending:
         task.cancel()
     if pending:
         await asyncio.gather(*pending, return_exceptions=True)
-        log.warning("%d задач не уложились в grace и сняты", len(pending))
+        log.warning("%d tasks did not finish in grace and were cancelled", len(pending))
     return len(done), len(pending)
 
 
 def install_signal_handlers(stop: Callable[[str], Any]) -> None:
-    """SIGINT и SIGTERM переводятся в аккуратную остановку, а не в KeyboardInterrupt."""
+    """SIGINT and SIGTERM become a clean stop, not a KeyboardInterrupt."""
     import signal
 
     loop = asyncio.get_running_loop()
@@ -426,13 +428,13 @@ def install_signal_handlers(stop: Callable[[str], Any]) -> None:
         try:
             loop.add_signal_handler(sig, stop, sig.name)
         except NotImplementedError:      # Windows
-            # sig связываем значением по умолчанию: иначе оба обработчика
-            # доложат об одном сигнале — том, что остался в конце цикла
+            # Bind sig as a default: otherwise both handlers would
+            # report the same signal — whichever was left at the end of the loop
             signal.signal(sig, lambda *_, name=sig.name: stop(name))
 
 
 async def cancel_and_wait(task: asyncio.Task | None) -> None:
-    """Снять задачу и дождаться её конца, не пробрасывая CancelledError."""
+    """Cancel a task and wait for it to end, without re-raising CancelledError."""
     if task is None:
         return
     task.cancel()

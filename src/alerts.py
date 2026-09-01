@@ -1,19 +1,19 @@
-"""Уведомления во внешний webhook.
+"""Notifications to an external webhook.
 
-Пайплайн работает без присмотра, и узнать о том, что цепь разомкнулась или
-дневной лимит выбран, сейчас можно только заглянув в лог. Отправка событий
-наружу закрывает этот разрыв.
+The pipeline runs unsupervised, and the only way to learn that the
+circuit opened or the daily limit was spent is to look in the log.
+Sending events outward closes that gap.
 
-Три правила, из которых всё остальное следует:
-  * выключено по умолчанию — пустой `webhook_url` не шлёт ничего;
-  * никогда не мешает торговле — отправка идёт фоновой задачей, любая
-    ошибка сети остаётся в логе и наружу не всплывает;
-  * не превращается в спам — поток событий ограничен по частоте, лишнее
-    считается и выбрасывается, а не копится в очереди.
+Three rules from which everything else follows:
+  * off by default — an empty `webhook_url` sends nothing;
+  * never interferes with trading — send is a background task, any
+    network error stays in the log and does not surface;
+  * does not turn into spam — the event stream is rate-limited, extras
+    are counted and dropped, not queued.
 
-Формат сообщения намеренно простой: `text` понимает Slack, `content` —
-Discord, остальные поля не мешают ни тем, ни другим. Для Telegram нужен
-промежуточный релей: у него другой протокол.
+Message format is intentionally simple: `text` is understood by Slack,
+`content` by Discord, the other fields bother neither. Telegram needs
+an intermediate relay: it has a different protocol.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from .models import AlertsConfig
 
 log = logging.getLogger(__name__)
 
-# События, которые умеет слать пайплайн. Набор в конфиге — подмножество.
+# Events the pipeline knows how to send. The set in config is a subset.
 KNOWN_EVENTS = (
     "started", "stopped", "buy", "close", "rug",
     "breaker", "halted", "stalled", "blind", "cooldown",
@@ -39,7 +39,7 @@ KNOWN_EVENTS = (
 
 
 class Notifier:
-    """Отправка событий в webhook. Работает и выключенным — тогда молча."""
+    """Send events to a webhook. Works while disabled — then it stays silent."""
 
     def __init__(self, config: AlertsConfig, client: httpx.AsyncClient | None = None) -> None:
         self.config = config
@@ -58,13 +58,13 @@ class Notifier:
     def wants(self, event: str) -> bool:
         return self.enabled and event in self.config.events
 
-    # -- отправка ----------------------------------------------------------
+    # -- send --------------------------------------------------------------
 
     def notify(self, event: str, text: str, **fields: Any) -> asyncio.Task | None:
-        """Поставить событие в отправку. Возвращает задачу или None.
+        """Queue an event for send. Returns a task or None.
 
-        Синхронный вызов: торговая логика не должна ждать сеть ради
-        уведомления.
+        Synchronous call: trading logic must not wait on the network
+        for a notification.
         """
         if not self.wants(event):
             return None
@@ -77,13 +77,13 @@ class Notifier:
         return task
 
     def _allow_now(self) -> bool:
-        """Скользящее окно в минуту. Всплеск лончей не должен стать всплеском писем."""
+        """Sliding one-minute window. A launch spike must not become a mail spike."""
         now = time.monotonic()
         while self._recent and now - self._recent[0] > 60.0:
             self._recent.popleft()
         if len(self._recent) >= self.config.max_per_minute:
             if self.dropped == 0:
-                log.warning("уведомления придержаны: больше %d в минуту",
+                log.warning("notifications held back: more than %d per minute",
                             self.config.max_per_minute)
             return False
         self._recent.append(now)
@@ -93,7 +93,7 @@ class Notifier:
         payload = {
             "event": event,
             "text": f"[grokbot] {text}",
-            "content": f"[grokbot] {text}",   # Discord читает это поле
+            "content": f"[grokbot] {text}",   # Discord reads this field
             "fields": fields,
         }
         try:
@@ -105,23 +105,23 @@ class Notifier:
             )
             if response.status_code >= 400:
                 self.failed += 1
-                # URL не печатаем: в нём токен
-                log.warning("webhook ответил %d на событие %s", response.status_code, event)
+                # Do not print the URL: it contains a token
+                log.warning("webhook replied %d to event %s", response.status_code, event)
                 return
             self.sent += 1
         except Exception as exc:
             self.failed += 1
-            log.warning("уведомление %s не ушло: %s", event, exc)
+            log.warning("notification %s did not go out: %s", event, exc)
 
     def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None:
             self._client = httpx.AsyncClient(timeout=self.config.timeout_seconds)
         return self._client
 
-    # -- завершение --------------------------------------------------------
+    # -- shutdown ----------------------------------------------------------
 
     async def aclose(self, grace: float = 5.0) -> None:
-        """Дать уйти последним уведомлениям и закрыть соединение."""
+        """Let the last notifications go out and close the connection."""
         if self._tasks:
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(
