@@ -1,4 +1,4 @@
-"""Единая точка входа: команды должны попадать туда, куда обещано."""
+"""Single entry point: commands must land where they are promised."""
 
 import json
 import sys
@@ -10,7 +10,7 @@ from src.cli import build_parser, main
 GOOD_CONFIG = """
 mode: dry-run
 grok:
-  api_key: xai-cli-ключ-1234567890
+  api_key: xai-cli-key-1234567890
 """
 
 
@@ -27,11 +27,11 @@ ops:
     return path
 
 
-# --- разбор аргументов ----------------------------------------------------
+# --- argument parsing -----------------------------------------------------
 
 
 def test_default_command_is_run():
-    assert build_parser().parse_args([]).command is None      # main подставит run
+    assert build_parser().parse_args([]).command is None      # main will default to run
 
 
 @pytest.mark.parametrize("command", ["run", "check", "doctor", "replay",
@@ -42,51 +42,51 @@ def test_every_command_parses(command):
 
 def test_unknown_command_is_rejected():
     with pytest.raises(SystemExit):
-        build_parser().parse_args(["взлететь"])
+        build_parser().parse_args(["liftoff"])
 
 
-# --- команды без сети -----------------------------------------------------
+# --- offline commands -----------------------------------------------------
 
 
 def test_curve_prints_numbers(capsys):
     assert main(["curve"]) == 0
     printed = capsys.readouterr().out
-    assert "потолок заявки" in printed
+    assert "order ceiling" in printed
     assert "%" in printed
 
 
 def test_check_accepts_good_config(config_file, capsys):
     assert main(["check", "--config", str(config_file)]) == 0
     printed = capsys.readouterr().out
-    assert "xai-cli-ключ-1234567890" not in printed      # секрет замаскирован
+    assert "xai-cli-key-1234567890" not in printed      # the secret is masked
     assert json.loads(printed)["mode"] == "dry-run"
 
 
 def test_check_rejects_bad_config(tmp_path, capsys):
     path = tmp_path / "config.yaml"
-    path.write_text("mode: dry-run\n")                  # без ключа Grok
+    path.write_text("mode: dry-run\n")                  # no Grok key
     assert main(["check", "--config", str(path)]) == 1
     assert "api_key" in capsys.readouterr().err
 
 
 def test_missing_config_is_explained(tmp_path):
     with pytest.raises(SystemExit) as exc:
-        main(["check", "--config", str(tmp_path / "нет.yaml")])
+        main(["check", "--config", str(tmp_path / "missing.yaml")])
     assert "config.example.yaml" in str(exc.value)
 
 
 def test_doctor_offline(config_file, capsys):
     assert main(["doctor", "--config", str(config_file), "--offline"]) == 0
     printed = capsys.readouterr().out
-    assert "ПРЕДПОЛЁТНАЯ ПРОВЕРКА" in printed
-    assert "константы кривой" in printed
+    assert "PRE-FLIGHT CHECK" in printed
+    assert "curve constants" in printed
 
 
 def test_doctor_json_output(config_file, capsys):
     main(["doctor", "--config", str(config_file), "--offline", "--json"])
     report = json.loads(capsys.readouterr().out)
     assert report["summary"]["fail"] == 0
-    assert any(c["name"] == "константы кривой" for c in report["checks"])
+    assert any(c["name"] == "curve constants" for c in report["checks"])
 
 
 def test_doctor_fails_on_bad_config(tmp_path, capsys):
@@ -95,7 +95,7 @@ def test_doctor_fails_on_bad_config(tmp_path, capsys):
     assert main(["doctor", "--config", str(path), "--offline"]) == 1
 
 
-# --- делегирование скриптам ----------------------------------------------
+# --- delegation to scripts ------------------------------------------------
 
 
 def test_replay_runs_the_script(tmp_path, capsys):
@@ -104,7 +104,7 @@ def test_replay_runs_the_script(tmp_path, capsys):
                                "size_sol": 0.4, "scores": {"total": 0.8}}) + "\n")
     code = main(["replay", str(log)])
     assert code == 0
-    assert "РЕПЛЕЙ" in capsys.readouterr().out
+    assert "REPLAY" in capsys.readouterr().out
 
 
 def test_dashboard_runs_the_script(tmp_path, capsys):
@@ -119,19 +119,19 @@ def test_script_arguments_are_passed_through(tmp_path, capsys):
     log = tmp_path / "trades.jsonl"
     log.write_text("")
     main(["replay", str(log), "--since", "2020-01-01"])
-    assert "нет записей" in capsys.readouterr().out
+    assert "No records" in capsys.readouterr().out
 
 
 def test_unknown_script_is_reported(monkeypatch):
     import src.cli as cli_module
 
-    monkeypatch.setattr(cli_module, "SCRIPTS", cli_module.SCRIPTS / "нет-такой-папки")
+    monkeypatch.setattr(cli_module, "SCRIPTS", cli_module.SCRIPTS / "no-such-folder")
     with pytest.raises(SystemExit):
         main(["tune"])
 
 
 def test_argv_restored_for_the_caller(tmp_path):
-    """Делегирование не должно ломать argv вызывающего процесса."""
+    """Delegation must not break the caller's argv."""
     log = tmp_path / "trades.jsonl"
     log.write_text("")
     before = list(sys.argv)

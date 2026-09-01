@@ -1,9 +1,9 @@
-"""Агенты с замоканным HTTP. В сеть тесты не ходят: весь транспорт — это
-httpx.MockTransport.
+"""Agents with mocked HTTP. Tests do not go to the network: the whole
+transport is httpx.MockTransport.
 
-Главное, что здесь проверяется, — пессимистичный фолбэк. Кривой JSON,
-таймаут, пятисотка, ответ не по схеме: во всех случаях агент обязан вернуть
-худший вариант, а не пустой и не нейтральный.
+What is checked here is the pessimistic fallback. Broken JSON, a
+timeout, a 500, a response off-schema: in every case the agent must
+return the worst variant, not empty and not neutral.
 """
 
 import json
@@ -31,7 +31,7 @@ def config() -> Config:
     cfg = Config()
     cfg.grok.api_key = "test-key"
     cfg.grok.max_retries = 3
-    cfg.grok.retry_base_delay = 0.0      # тесты не должны ждать ретраи
+    cfg.grok.retry_base_delay = 0.0      # tests must not wait on retries
     cfg.scoring.timing_cache_seconds = 900.0
     return cfg
 
@@ -62,7 +62,7 @@ def token() -> Token:
     return Token(mint="Mint1", name="Cat", symbol="CAT", image_uri="https://i", creator="C")
 
 
-# --- аудитор --------------------------------------------------------------
+# --- auditor --------------------------------------------------------------
 
 
 AUDIT_OK = json.dumps(
@@ -74,7 +74,7 @@ AUDIT_OK = json.dumps(
         "organic_buyer_share": 0.82,
         "confidence": 0.7,
         "flags": [],
-        "reasoning": "покупки разрозненные",
+        "reasoning": "buys are scattered",
     }
 )
 
@@ -100,7 +100,7 @@ async def test_auditor_sends_trades_in_prompt(config):
 
 
 async def test_auditor_broken_json_is_pessimistic(config):
-    async with AuditorAgent(config, client_returning("почти JSON, но нет {")) as agent:
+    async with AuditorAgent(config, client_returning("almost JSON, but no {")) as agent:
         result = await agent.run(token(), [], [], TokenMetrics())
     assert result.coordinated_buying
     assert result.wash_trading
@@ -125,24 +125,24 @@ async def test_auditor_timeout_is_pessimistic(config):
     async with AuditorAgent(config, client) as agent:
         result = await agent.run(token(), [], [], TokenMetrics())
     assert result.score == 0.0
-    assert len(calls) == config.grok.max_retries     # ретраи отработали
+    assert len(calls) == config.grok.max_retries     # retries ran
 
 
 async def test_schema_mismatch_is_pessimistic(config):
-    bad = json.dumps({"organic_buyer_share": "почти вся", "confidence": 0.9})
+    bad = json.dumps({"organic_buyer_share": "almost all", "confidence": 0.9})
     async with AuditorAgent(config, client_returning(bad)) as agent:
         result = await agent.run(token(), [], [], TokenMetrics())
     assert "agent_failure" in result.flags
     assert result.score == 0.0
 
 
-# --- нарратив -------------------------------------------------------------
+# --- narrative ------------------------------------------------------------
 
 
 async def test_narrative_parses_and_averages(config):
     body = json.dumps(
         {"trend_fit": 0.8, "virality": 0.6, "community_signals": 0.4,
-         "launch_timing": 0.2, "reasoning": "ок"}
+         "launch_timing": 0.2, "reasoning": "ok"}
     )
     async with NarrativeAgent(config, client_returning(body)) as agent:
         result = await agent.run(token())
@@ -156,12 +156,12 @@ async def test_narrative_empty_response_is_zero(config):
     assert result.score == 0.0
 
 
-# --- тайминг и кэш --------------------------------------------------------
+# --- timing and cache -----------------------------------------------------
 
 
 TIMING_OK = json.dumps(
     {"market_sentiment": 0.7, "meme_season": 0.8, "volume_level": 0.6,
-     "anomalies": [], "reasoning": "фон обычный"}
+     "anomalies": [], "reasoning": "ordinary backdrop"}
 )
 
 
@@ -170,7 +170,7 @@ async def test_timing_caches_result(config):
     async with TimingAgent(config, client_returning(TIMING_OK, calls)) as agent:
         first = await agent.get({"x": 1})
         second = await agent.get({"x": 1})
-    assert len(calls) == 1                    # второй раз в сеть не пошли
+    assert len(calls) == 1                    # the second time we did not go to the network
     assert second is first
     assert first.score == pytest.approx(0.7)
 
@@ -185,9 +185,9 @@ async def test_timing_cache_expires(config):
 
 
 async def test_timing_failure_is_not_cached(config):
-    """Сбой не должен блокировать оценку рынка на все 15 минут."""
+    """A failure must not lock the market assessment for a full 15 minutes."""
     calls: list = []
-    async with TimingAgent(config, client_raising(httpx.ConnectError("нет сети"), calls)) as agent:
+    async with TimingAgent(config, client_raising(httpx.ConnectError("no network"), calls)) as agent:
         first = await agent.get()
         assert "agent_failure" in first.anomalies
         assert agent._cached is None
@@ -198,7 +198,7 @@ async def test_timing_failure_is_not_cached(config):
 async def test_timing_anomalies_lower_score(config):
     body = json.dumps(
         {"market_sentiment": 0.9, "meme_season": 0.9, "volume_level": 0.9,
-         "anomalies": ["solana_outage"], "reasoning": "сеть шатает"}
+         "anomalies": ["solana_outage"], "reasoning": "the network is shaky"}
     )
     async with TimingAgent(config, client_returning(body)) as agent:
         result = await agent.get()
@@ -206,7 +206,7 @@ async def test_timing_anomalies_lower_score(config):
     assert result.score == pytest.approx(0.8)
 
 
-# --- чекер ----------------------------------------------------------------
+# --- checker --------------------------------------------------------------
 
 
 def full_analysis() -> Analysis:
@@ -223,7 +223,7 @@ def full_analysis() -> Analysis:
 
 async def test_checker_uses_stronger_model(config):
     calls: list = []
-    body = json.dumps({"approve": True, "reason": "чисто", "flags": [], "confidence": 0.8})
+    body = json.dumps({"approve": True, "reason": "clean", "flags": [], "confidence": 0.8})
     async with CheckerAgent(config, client_returning(body, calls)) as agent:
         result = await agent.run(full_analysis())
     assert isinstance(result, CheckerResult)
@@ -234,7 +234,7 @@ async def test_checker_uses_stronger_model(config):
 
 async def test_checker_rejection_is_passed_through(config):
     body = json.dumps(
-        {"approve": False, "reason": "органика не бьётся с мем-оценкой",
+        {"approve": False, "reason": "organic share does not match the meme score",
          "flags": ["contradiction"], "confidence": 0.9}
     )
     async with CheckerAgent(config, client_returning(body)) as agent:
@@ -244,7 +244,7 @@ async def test_checker_rejection_is_passed_through(config):
 
 
 async def test_checker_failure_means_refusal(config):
-    """Ошибка проверки равна отказу, а не молчаливому пропуску."""
+    """A checker error is a refusal, not a silent pass."""
     async with CheckerAgent(config, client_returning("¯\\_(ツ)_/¯")) as agent:
         result = await agent.run(full_analysis())
     assert result.approve is False
@@ -266,7 +266,7 @@ async def test_checker_server_error_means_refusal(config):
 
 
 async def test_client_error_is_not_retried(config):
-    """401 ретраить бессмысленно — ключ от этого не починится."""
+    """Retrying a 401 is pointless — that will not fix the key."""
     seen: list = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -280,18 +280,18 @@ async def test_client_error_is_not_retried(config):
     assert len(seen) == 1
 
 
-# --- разбор JSON ----------------------------------------------------------
+# --- JSON parsing ---------------------------------------------------------
 
 
 def test_extract_json_variants():
     assert extract_json('{"a": 1}') == {"a": 1}
     assert extract_json('```json\n{"a": 1}\n```') == {"a": 1}
     assert extract_json('```\n{"a": 1}\n```') == {"a": 1}
-    assert extract_json('Вот ответ: {"a": {"b": "}"}} — всё') == {"a": {"b": "}"}}
+    assert extract_json('Here is the answer: {"a": {"b": "}"}} — all') == {"a": {"b": "}"}}
 
 
 def test_extract_json_rejects_garbage():
-    for bad in ("", "   ", "нет тут джейсона", "[1, 2, 3]", '{"a": 1'):
+    for bad in ("", "   ", "no json here", "[1, 2, 3]", '{"a": 1'):
         with pytest.raises(ValueError):
             extract_json(bad)
 
@@ -304,7 +304,7 @@ def test_base_agent_requires_overrides(config):
         agent.fallback("x")
 
 
-# --- промпты --------------------------------------------------------------
+# --- prompts --------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -317,7 +317,7 @@ def test_every_prompt_demands_bare_json(agent_cls):
     assert prompt.strip().endswith("```.")
 
 
-# --- чекер видит экономику сделки ----------------------------------------
+# --- checker sees the trade economics -------------------------------------
 
 
 def analysis_with_plan():
@@ -336,32 +336,32 @@ def analysis_with_plan():
 
 
 async def test_checker_sees_the_trade_economics(config):
-    """Чекер должен знать, во что обойдётся сделка, а не только то,
-    насколько хорош токен."""
+    """The checker must know what the trade will cost, not only how
+    good the token is."""
     calls: list = []
-    body = json.dumps({"approve": False, "reason": "круг дороже движения",
-                       "flags": ["издержки"], "confidence": 0.8})
+    body = json.dumps({"approve": False, "reason": "round trip costs more than the move",
+                       "flags": ["costs"], "confidence": 0.8})
     async with CheckerAgent(config, client_returning(body, calls)) as agent:
         await agent.run(analysis_with_plan())
 
-    план = json.loads(calls[0]["messages"][1]["content"])["план"]
-    assert план["размер_sol"] == 0.4
-    assert план["стоимость_круга_pct"] == 1.99
-    assert план["влияние_на_цену_pct"] > 0
-    assert план["take_profit_pct"] == config.risk.take_profit_pct
-    assert план["stop_loss_pct"] == config.risk.stop_loss_pct
+    plan = json.loads(calls[0]["messages"][1]["content"])["plan"]
+    assert plan["size_sol"] == 0.4
+    assert plan["round_trip_cost_pct"] == 1.99
+    assert plan["price_impact_pct"] > 0
+    assert plan["take_profit_pct"] == config.risk.take_profit_pct
+    assert plan["stop_loss_pct"] == config.risk.stop_loss_pct
 
 
 async def test_checker_prompt_demands_cost_check(config):
-    assert "стоимость_круга_pct" in CheckerAgent.prompt
-    assert "влияние_на_цену_pct" in CheckerAgent.prompt
+    assert "round_trip_cost_pct" in CheckerAgent.prompt
+    assert "price_impact_pct" in CheckerAgent.prompt
 
 
 async def test_plan_absent_does_not_break_the_checker(config):
     calls: list = []
-    body = json.dumps({"approve": True, "reason": "ок", "flags": [], "confidence": 0.7})
+    body = json.dumps({"approve": True, "reason": "ok", "flags": [], "confidence": 0.7})
     async with CheckerAgent(config, client_returning(body, calls)) as agent:
         result = await agent.run(full_analysis())
     assert result.approve
-    план = json.loads(calls[0]["messages"][1]["content"])["план"]
-    assert план["размер_sol"] is None
+    plan = json.loads(calls[0]["messages"][1]["content"])["plan"]
+    assert plan["size_sol"] is None

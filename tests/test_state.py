@@ -1,7 +1,7 @@
-"""Состояние, переживающее рестарт.
+"""State that survives a restart.
 
-Главное здесь — что процесс, поднятый заново, помнит открытые позиции и
-дневные лимиты. Без этого рестарт обнуляет оба ограничителя.
+The point is that a process brought back up remembers open positions
+and the daily limits. Without that, a restart zeroes both guards.
 """
 
 import json
@@ -42,7 +42,7 @@ def position(mint: str = "M", sol: float = 0.4) -> Position:
                     token_amount=1000.0, opened_at=1.0, tx_hash="dry_run", score=0.8)
 
 
-# --- хранилище ------------------------------------------------------------
+# --- store ----------------------------------------------------------------
 
 
 def test_missing_file_is_not_an_error(store):
@@ -63,7 +63,7 @@ def test_save_and_load_roundtrip(store):
 
 
 def test_save_creates_parent_directory(tmp_path):
-    store = StateStore(tmp_path / "глубоко" / "внутри" / "state.json")
+    store = StateStore(tmp_path / "deep" / "inside" / "state.json")
     store.save(PipelineState(day="2026-08-26"))
     assert store.path.exists()
 
@@ -77,14 +77,14 @@ def test_save_leaves_no_temp_files(store):
 
 def test_corrupt_file_is_set_aside_not_crashed(store):
     store.path.parent.mkdir(parents=True, exist_ok=True)
-    store.path.write_text("{это не json")
+    store.path.write_text("{not json")
     assert store.load() is None
     assert store.path.with_suffix(".json.corrupt").exists()
 
 
 def test_wrong_shape_is_handled_like_corruption(store):
     store.path.parent.mkdir(parents=True, exist_ok=True)
-    store.path.write_text(json.dumps({"positions": "не словарь"}))
+    store.path.write_text(json.dumps({"positions": "not a dict"}))
     assert store.load() is None
 
 
@@ -92,16 +92,16 @@ def test_clear_removes_file(store):
     store.save(PipelineState(day="2026-08-26"))
     store.clear()
     assert not store.path.exists()
-    store.clear()      # повторно — не падает
+    store.clear()      # a second call must not crash
 
 
 def test_describe_is_readable():
     text = describe(PipelineState(day="2026-08-26", trades_today=3,
                                   realized_pnl_sol=-0.25, positions={"M": position()}))
-    assert "2026-08-26" in text and "открытых позиций 1" in text
+    assert "2026-08-26" in text and "open positions 1" in text
 
 
-# --- восстановление риск-менеджера ---------------------------------------
+# --- restoring the risk manager -------------------------------------------
 
 
 def test_restart_remembers_open_positions(config, store):
@@ -116,7 +116,7 @@ def test_restart_remembers_open_positions(config, store):
 
 
 def test_restart_does_not_reopen_the_same_token(config, store):
-    """Иначе после рестарта пайплайн купит то же самое второй раз."""
+    """Otherwise after a restart the pipeline would buy the same token again."""
     first = RiskManager(config, clock=FakeClock(), store=store)
     first.register_open(position("A"))
 
@@ -162,8 +162,8 @@ def test_state_from_another_day_resets_counters_but_keeps_positions(config, stor
     clock.advance_days(1)
     second = RiskManager(config, clock=clock, store=store)
     second.restore()
-    assert "B" in second.positions        # позиция реально открыта на цепочке
-    assert not second.halted              # а лимит — вчерашний
+    assert "B" in second.positions        # the position is really open on-chain
+    assert not second.halted              # and the limit is yesterday's
     assert second.trades_today == 0
 
 
@@ -183,7 +183,7 @@ def test_day_roll_persists_reset(config, store):
 
 
 def test_manager_without_store_works(config):
-    """Хранилище опционально: без него менеджер просто ничего не пишет."""
+    """The store is optional: without it the manager just writes nothing."""
     manager = RiskManager(config, clock=FakeClock())
     manager.register_open(position("A"))
     assert not manager.restore()
@@ -192,13 +192,13 @@ def test_manager_without_store_works(config):
 
 def test_unreadable_state_does_not_block_start(config, store):
     store.path.parent.mkdir(parents=True, exist_ok=True)
-    store.path.write_text("мусор")
+    store.path.write_text("garbage")
     manager = RiskManager(config, clock=FakeClock(), store=store)
     assert not manager.restore()
     assert manager.evaluate("A", 0.9).approved
 
 
-# --- замок на единственный экземпляр --------------------------------------
+# --- single-instance lock -------------------------------------------------
 
 
 def test_lock_is_taken_and_released(tmp_path):
@@ -212,7 +212,7 @@ def test_lock_is_taken_and_released(tmp_path):
 
 
 def test_second_instance_is_refused(tmp_path, monkeypatch):
-    """Два бота на одном состоянии — это два бота на одном кошельке."""
+    """Two bots on one state file are two bots on one wallet."""
     import os
 
     from src.state import InstanceLock
@@ -220,13 +220,13 @@ def test_second_instance_is_refused(tmp_path, monkeypatch):
     first = InstanceLock(tmp_path / "pipeline.json")
     assert first.acquire()
 
-    monkeypatch.setattr(os, "getpid", lambda: os.getppid())   # как будто другой процесс
+    monkeypatch.setattr(os, "getpid", lambda: os.getppid())   # as if it were another process
     second = InstanceLock(tmp_path / "pipeline.json")
     assert not second.acquire()
 
 
 def test_stale_lock_is_taken_over(tmp_path):
-    """Падение процесса не должно оставлять систему незапускаемой."""
+    """A process crash must not leave the system unable to start."""
     import json as json_module
 
     from src.state import InstanceLock
@@ -243,7 +243,7 @@ def test_broken_lock_file_does_not_block(tmp_path):
 
     lock = InstanceLock(tmp_path / "pipeline.json")
     lock.path.parent.mkdir(parents=True, exist_ok=True)
-    lock.path.write_text("не json")
+    lock.path.write_text("not json")
     assert lock.acquire()
 
 

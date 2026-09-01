@@ -1,5 +1,6 @@
-"""Риск-менеджер: срабатывание всех пяти лимитов, размер позиции у границы
-дневного бюджета и сброс суток."""
+"""Risk manager: all five limits firing, position size at the daily
+budget edge, and the day roll.
+"""
 
 import pytest
 
@@ -14,7 +15,7 @@ from src.risk import (
 
 
 class FakeClock:
-    """Управляемое время: сутки переключаем руками, а не ждём полуночи."""
+    """Controllable time: we roll the day by hand, we do not wait for midnight."""
 
     def __init__(self, start: float = 1_800_000_000.0) -> None:
         self.now = start
@@ -50,7 +51,7 @@ def position(mint: str = "M", entry: float = 1.0, sol: float = 0.5,
                     peak_price=entry if peak is None else peak)
 
 
-# --- размер позиции -------------------------------------------------------
+# --- position size --------------------------------------------------------
 
 
 def test_size_is_proportional_to_score(manager):
@@ -60,12 +61,12 @@ def test_size_is_proportional_to_score(manager):
 
 
 def test_size_capped_by_max_sol_per_trade(manager):
-    """Скоринг выше единицы не увеличивает ставку."""
+    """A score above one does not increase the stake."""
     assert manager.position_size(3.0) == pytest.approx(0.5)
 
 
 def test_size_shrinks_near_daily_limit(manager):
-    """Осталось 0.4 SOL бюджета -> в сделку идёт не больше 30% от них."""
+    """0.4 SOL of budget left -> the trade takes no more than 30% of it."""
     manager.realized_pnl_sol = -1.6
     assert manager.remaining_loss_budget == pytest.approx(0.4)
     expected = 0.4 * MAX_SHARE_OF_REMAINING_BUDGET
@@ -81,13 +82,13 @@ def test_tiny_remaining_budget_rejects_trade(manager):
 
 
 def test_profit_does_not_inflate_budget(manager):
-    """Прибыль не расширяет дневной лимит убытка сверх конфига."""
+    """Profit does not expand the daily loss limit past the config."""
     manager.realized_pnl_sol = +5.0
     assert manager.remaining_loss_budget == pytest.approx(2.0)
     assert manager.position_size(1.0) == pytest.approx(0.5)
 
 
-# --- лимиты ---------------------------------------------------------------
+# --- limits ---------------------------------------------------------------
 
 
 def test_healthy_trade_approved(manager):
@@ -105,7 +106,7 @@ def test_daily_loss_limit_halts_trading(manager):
 
 
 def test_daily_loss_limit_boundary(manager):
-    """Ровно лимит — уже стоп; на волосок меньше — ещё торгуем."""
+    """Exactly the limit is already a stop; a hair under it, we still trade."""
     manager.realized_pnl_sol = -1.999
     assert not manager.halted
     manager.realized_pnl_sol = -2.0
@@ -145,7 +146,7 @@ def test_no_double_position_in_same_mint(manager):
     assert decision.reason == "already_open"
 
 
-# --- сутки ----------------------------------------------------------------
+# --- day roll -------------------------------------------------------------
 
 
 def test_new_day_resets_counters_and_unhalts(config):
@@ -178,7 +179,7 @@ def test_same_day_does_not_reset(manager):
     assert manager.trades_today == 1
 
 
-# --- стоп-лосс ------------------------------------------------------------
+# --- stop-loss ------------------------------------------------------------
 
 
 def test_stop_loss_boundary():
@@ -216,17 +217,17 @@ async def test_watcher_survives_price_errors(manager):
     manager.register_open(position("A", entry=1.0))
 
     async def price_fn(mint: str) -> float:
-        raise RuntimeError("RPC лёг")
+        raise RuntimeError("RPC is down")
 
     async def sell_fn(pos, price, reason, fraction=1.0) -> None:  # pragma: no cover
-        raise AssertionError("продажа без цены")
+        raise AssertionError("sell without a price")
 
     watcher = PositionWatcher(manager, price_fn, sell_fn)
     assert await watcher.check_once() == []
     assert "A" in manager.positions
 
 
-# --- выходы вверх и по времени -------------------------------------------
+# --- upside and time exits ------------------------------------------------
 
 
 @pytest.fixture
@@ -254,30 +255,30 @@ def test_take_profit_boundary(exits):
 
 
 def test_stop_loss_wins_over_everything(exits):
-    """Просадка ниже стопа закрывает позицию, даже если она была в плюсе."""
+    """A drawdown below the stop closes the position even if it was in profit."""
     signal = exit_signal(position(entry=1.0, peak=3.0, opened_at=0.0), 0.6, exits, now=1.0)
     assert signal.reason == "stop_loss"
 
 
 def test_trailing_stop_fires_after_peak(exits):
     pos = position(entry=1.0, peak=2.0, opened_at=1000.0)
-    assert exit_signal(pos, 1.4, exits, now=1100.0) is None          # откат 30%
-    signal = exit_signal(pos, 1.29, exits, now=1100.0)               # откат 35.5%
+    assert exit_signal(pos, 1.4, exits, now=1100.0) is None          # 30% pullback
+    signal = exit_signal(pos, 1.29, exits, now=1100.0)               # 35.5% pullback
     assert signal is not None and signal.reason == "trailing_stop"
     assert "from peak" in signal.detail
 
 
 def test_trailing_ignores_price_below_entry(exits):
-    """Ниже входа за позицию отвечает стоп-лосс, а не трейлинг."""
+    """Below entry the stop-loss owns the position, not the trailing stop."""
     signal = exit_signal(position(entry=1.0, peak=1.0, opened_at=1000.0), 0.8, exits, now=1100.0)
     assert signal is None
 
 
 def test_trailing_uses_live_price_as_peak(exits):
-    """Пик обновляется прямо в проверке: рывок вверх и обратно не теряется."""
+    """The peak is updated in the check itself: a spike up and back is not lost."""
     pos = position(entry=1.0, peak=1.0)
-    assert exit_signal(pos, 2.19, exits, now=1.0) is None            # ещё не take-profit
-    assert pos.peak_price == 1.0                                     # сама функция не пишет
+    assert exit_signal(pos, 2.19, exits, now=1.0) is None            # not yet take-profit
+    assert pos.peak_price == 1.0                                     # the function itself does not write
     pos.peak_price = 2.19
     assert exit_signal(pos, 1.4, exits, now=1.0).reason == "trailing_stop"
 
@@ -290,7 +291,7 @@ def test_max_hold_closes_stale_position(exits):
 
 
 def test_max_hold_does_not_cut_a_runner(exits):
-    """Позиция, которая едет вверх, закроется по take-profit, а не по таймеру."""
+    """A position that is running up will close on take-profit, not the timer."""
     pos = position(entry=1.0, peak=2.5, opened_at=1000.0)
     signal = exit_signal(pos, 2.5, exits, now=1000.0 + 99_999)
     assert signal.reason == "take_profit"
@@ -325,7 +326,7 @@ async def test_watcher_tracks_peak_and_persists(config, tmp_path):
         return next(prices)
 
     async def sell_fn(pos, price, reason, fraction=1.0) -> None:  # pragma: no cover
-        raise AssertionError("выхода быть не должно")
+        raise AssertionError("no exit should fire")
 
     watcher = PositionWatcher(manager, price_fn, sell_fn)
     await watcher.check_once()
@@ -333,7 +334,7 @@ async def test_watcher_tracks_peak_and_persists(config, tmp_path):
 
     assert manager.positions["A"].peak_price == 2.0
     saved = store.load()
-    assert saved.positions["A"].peak_price >= 1.5      # пик пережил бы рестарт
+    assert saved.positions["A"].peak_price >= 1.5      # the peak would survive a restart
 
 
 async def test_watcher_reports_exit_reason(config):
@@ -354,25 +355,25 @@ async def test_watcher_reports_exit_reason(config):
     assert seen == ["take_profit"]
 
 
-# --- позиция без котировок ------------------------------------------------
+# --- position without quotes ----------------------------------------------
 
 
 async def test_position_without_price_is_reported_blind(manager):
     manager.register_open(position("A", entry=1.0))
 
     async def price_fn(mint: str) -> float:
-        raise RuntimeError("провайдер лёг")
+        raise RuntimeError("provider is down")
 
     async def sell_fn(pos, price, reason, fraction=1.0) -> None:  # pragma: no cover
-        raise AssertionError("продажа без цены")
+        raise AssertionError("sell without a price")
 
     watcher = PositionWatcher(manager, price_fn, sell_fn)
     for _ in range(watcher.BLIND_AFTER - 1):
         await watcher.check_once()
-    assert watcher.blind == []                # ещё терпим
+    assert watcher.blind == []                # still tolerable
 
     await watcher.check_once()
-    assert watcher.blind == ["A"]             # а вот теперь молчать нельзя
+    assert watcher.blind == ["A"]             # now we must not stay silent
 
 
 async def test_zero_price_counts_as_missing(manager):
@@ -382,7 +383,7 @@ async def test_zero_price_counts_as_missing(manager):
         return 0.0
 
     async def sell_fn(pos, price, reason, fraction=1.0) -> None:  # pragma: no cover
-        raise AssertionError("продажа по нулевой цене")
+        raise AssertionError("sell at zero price")
 
     watcher = PositionWatcher(manager, price_fn, sell_fn)
     for _ in range(watcher.BLIND_AFTER):
@@ -398,7 +399,7 @@ async def test_recovered_price_clears_blindness(manager):
         return prices.pop(0)
 
     async def sell_fn(pos, price, reason, fraction=1.0) -> None:  # pragma: no cover
-        raise AssertionError("выхода быть не должно")
+        raise AssertionError("no exit should fire")
 
     watcher = PositionWatcher(manager, price_fn, sell_fn)
     for _ in range(4):
@@ -414,7 +415,7 @@ async def test_closed_position_is_not_blind(manager):
         return 0.0
 
     async def sell_fn(pos, price, reason, fraction=1.0) -> None:  # pragma: no cover
-        raise AssertionError("не должно вызваться")
+        raise AssertionError("should not be called")
 
     watcher = PositionWatcher(manager, price_fn, sell_fn)
     for _ in range(watcher.BLIND_AFTER):
@@ -423,7 +424,7 @@ async def test_closed_position_is_not_blind(manager):
     assert watcher.blind == []
 
 
-# --- частичная фиксация ---------------------------------------------------
+# --- partial take-profit --------------------------------------------------
 
 
 def test_take_profit_can_be_partial(exits):
@@ -434,7 +435,7 @@ def test_take_profit_can_be_partial(exits):
 
 
 def test_take_profit_fires_only_once(exits):
-    """Иначе позиция распродавалась бы по кусочку на каждом тике."""
+    """Otherwise the position would be sold off a slice at a time on every tick."""
     exits.take_profit_fraction = 0.6
     pos = position(entry=1.0, opened_at=1000.0)
     pos.partials = 1
@@ -445,9 +446,9 @@ def test_tail_after_partial_still_trails(exits):
     exits.take_profit_fraction = 0.6
     pos = position(entry=1.0, peak=3.0, opened_at=1000.0)
     pos.partials = 1
-    signal = exit_signal(pos, 1.8, exits, now=1100.0)      # откат 40% от пика
+    signal = exit_signal(pos, 1.8, exits, now=1100.0)      # 40% pullback from the peak
     assert signal is not None and signal.reason == "trailing_stop"
-    assert signal.fraction == 1.0                          # хвост продаётся целиком
+    assert signal.fraction == 1.0                          # the tail is sold in full
 
 
 def test_protective_rules_are_never_partial(exits):
@@ -474,14 +475,14 @@ async def test_watcher_keeps_position_after_partial(config):
 
     async def sell_fn(pos, price, reason, fraction) -> None:
         calls.append((reason, fraction))
-        pos.partials += 1                    # как это делает пайплайн
+        pos.partials += 1                    # the way the pipeline does it
 
     watcher = PositionWatcher(manager, price_fn, sell_fn)
-    assert await watcher.check_once() == []   # позиция закрыта не полностью
+    assert await watcher.check_once() == []   # the position is not fully closed
     assert calls == [("take_profit", 0.6)]
     assert "A" in manager.positions
 
-    assert await watcher.check_once() == []   # второй раз take-profit молчит
+    assert await watcher.check_once() == []   # the second time take-profit stays silent
     assert len(calls) == 1
 
 
@@ -498,7 +499,7 @@ def test_partial_registers_money_but_keeps_position(config, tmp_path):
     assert store.load().realized_pnl_sol == pytest.approx(0.3)
 
 
-# --- общая экспозиция -----------------------------------------------------
+# --- total exposure -------------------------------------------------------
 
 
 def test_exposure_counts_open_positions(manager):
@@ -510,8 +511,8 @@ def test_exposure_counts_open_positions(manager):
 
 
 def test_size_capped_by_free_exposure(manager):
-    """Три позиции по потолку — это одна большая ставка, а не три мелкие:
-    мемкоины валятся вместе."""
+    """Three positions at the ceiling are one big bet, not three small ones:
+    memecoins dump together."""
     manager.risk.max_total_exposure_sol = 1.0
     manager.register_open(position("A", sol=0.8))
     assert manager.position_size(1.0) == pytest.approx(0.2)
@@ -526,21 +527,21 @@ def test_trade_refused_when_exposure_is_full(manager):
 
 
 def test_partial_exit_frees_exposure(manager):
-    """Частичная фиксация возвращает свободу: то, что уже забрано,
-    риском больше не является."""
+    """A partial take-profit frees capacity: what is already taken off
+    is no longer risk."""
     manager.risk.max_total_exposure_sol = 1.0
     pos = position("A", sol=0.999)
     manager.register_open(pos)
     assert not manager.evaluate("B", 1.0).approved
 
-    pos.sol_spent = 0.3                      # продали две трети
+    pos.sol_spent = 0.3                      # sold two thirds
     decision = manager.evaluate("B", 1.0)
     assert decision.approved
     assert decision.size_sol == pytest.approx(0.5)
 
 
 def test_nearly_full_exposure_shrinks_instead_of_refusing(manager):
-    """Пока остаток осмысленный, сделка не отменяется, а уменьшается."""
+    """While the remainder is meaningful, the trade is shrunk, not cancelled."""
     manager.risk.max_total_exposure_sol = 1.0
     manager.register_open(position("A", sol=0.9))
     decision = manager.evaluate("B", 1.0)
@@ -553,11 +554,11 @@ def test_exposure_in_snapshot(manager):
     assert manager.snapshot()["exposure_sol"] == pytest.approx(0.4)
 
 
-# --- пауза после серии убытков --------------------------------------------
+# --- cooldown after a losing streak ---------------------------------------
 
 
 def test_losing_streak_triggers_cooldown(config):
-    """Дневной лимит ловит медленное истечение, но не быструю серию."""
+    """The daily limit catches a slow bleed, not a fast streak."""
     clock = FakeClock()
     config.risk.cooldown_after_losses = 3
     config.risk.cooldown_minutes = 30.0

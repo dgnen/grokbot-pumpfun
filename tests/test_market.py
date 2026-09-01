@@ -1,4 +1,4 @@
-"""Пульс рынка: агент-тайминг должен получать измеренное, а не выдуманное."""
+"""Market pulse: the timing agent must get measured data, not invented data."""
 
 import pytest
 
@@ -11,7 +11,7 @@ def pulse(window: float = 900.0) -> MarketPulse:
     return MarketPulse(window_seconds=window, outcome_memory=5)
 
 
-# --- окно наблюдения ------------------------------------------------------
+# --- observation window ---------------------------------------------------
 
 
 def test_empty_pulse_reports_zeros():
@@ -19,11 +19,11 @@ def test_empty_pulse_reports_zeros():
     assert snapshot["launches_per_minute"] == 0.0
     assert snapshot["share_that_reached_review"] == 0.0
     assert snapshot["closed_trades_in_memory"] == 0
-    assert "win_rate" not in snapshot      # не выдумываем статистику из ничего
+    assert "win_rate" not in snapshot      # do not invent stats from nothing
 
 
 def test_launch_rate_is_per_minute():
-    market = pulse(window=600.0)                  # окно 10 минут
+    market = pulse(window=600.0)                  # 10-minute window
     for index in range(30):
         market.record_launch(35.0, now=NOW - 500 + index)
     assert market.snapshot(now=NOW)["launches_per_minute"] == pytest.approx(3.0)
@@ -31,7 +31,7 @@ def test_launch_rate_is_per_minute():
 
 def test_old_launches_leave_the_window():
     market = pulse(window=600.0)
-    market.record_launch(35.0, now=NOW - 5000)    # давно
+    market.record_launch(35.0, now=NOW - 5000)    # long ago
     market.record_launch(35.0, now=NOW - 100)
     snapshot = market.snapshot(now=NOW)
     assert snapshot["launches_in_window"] == 1
@@ -72,7 +72,7 @@ def test_hour_of_day_included():
     assert 0 <= pulse().snapshot(now=NOW)["utc_hour"] <= 23
 
 
-# --- исходы сделок --------------------------------------------------------
+# --- trade outcomes -------------------------------------------------------
 
 
 def test_outcomes_summarized():
@@ -83,11 +83,11 @@ def test_outcomes_summarized():
     assert snapshot["closed_trades_in_memory"] == 4
     assert snapshot["win_rate"] == pytest.approx(0.5)
     assert snapshot["median_pnl_pct"] == pytest.approx(25.0)
-    assert snapshot["rug_rate"] == pytest.approx(0.25)      # только -90
+    assert snapshot["rug_rate"] == pytest.approx(0.25)      # only the -90
 
 
 def test_outcome_memory_is_bounded():
-    market = pulse()                              # память на 5 исходов
+    market = pulse()                              # memory of 5 outcomes
     for pct in range(20):
         market.record_outcome(float(pct))
     assert market.snapshot(now=NOW)["closed_trades_in_memory"] == 5
@@ -100,7 +100,7 @@ def test_rug_threshold_respected():
     assert market.snapshot(now=NOW)["rug_rate"] == pytest.approx(0.5)
 
 
-# --- подъём из лога -------------------------------------------------------
+# --- restore from the log -------------------------------------------------
 
 
 def test_seed_from_log_restores_memory():
@@ -118,8 +118,8 @@ def test_seed_from_log_restores_memory():
 
 
 def test_seed_ignores_partial_closes():
-    """Частичная фиксация — не исход позиции: считать её отдельной сделкой
-    значит удвоить статистику по каждому удачному входу."""
+    """A partial take-profit is not a position outcome: counting it as a
+    separate trade would double the stats on every good entry."""
     market = pulse()
     records = [
         {"type": "close", "mint": "A", "pnl_pct": 120.0, "final": False},
@@ -129,7 +129,7 @@ def test_seed_ignores_partial_closes():
 
 
 def test_seed_takes_only_the_freshest():
-    market = pulse()                              # память на 5
+    market = pulse()                              # memory of 5
     records = [{"type": "close", "pnl_pct": float(i), "final": True} for i in range(20)]
     market.seed_from_log(records)
     assert market.snapshot(now=NOW)["median_pnl_pct"] == pytest.approx(17.0)
@@ -137,6 +137,6 @@ def test_seed_takes_only_the_freshest():
 
 def test_seed_survives_broken_records():
     market = pulse()
-    records = [{"type": "close", "final": True}]  # без pnl_pct
+    records = [{"type": "close", "final": True}]  # no pnl_pct
     assert market.seed_from_log(records) == 1
     assert market.snapshot(now=NOW)["median_pnl_pct"] == 0.0

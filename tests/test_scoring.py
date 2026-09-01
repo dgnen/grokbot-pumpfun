@@ -1,5 +1,6 @@
-"""Скоринг-матрица: границы, нормализация весов, поведение при отсутствующих
-компонентах."""
+"""Scoring matrix: bounds, weight normalisation, behaviour with missing
+components.
+"""
 
 import pytest
 
@@ -54,7 +55,7 @@ def worst_analysis() -> Analysis:
     )
 
 
-# --- границы --------------------------------------------------------------
+# --- bounds ---------------------------------------------------------------
 
 
 def test_perfect_analysis_scores_one(config):
@@ -69,7 +70,7 @@ def test_worst_analysis_scores_zero(config):
 
 
 def test_score_never_leaves_unit_interval(config):
-    """Даже если модель вернёт мусор за пределами 0..1, итог остаётся в 0..1."""
+    """Even if the model returns garbage outside 0..1, the total stays in 0..1."""
     analysis = perfect_analysis()
     analysis.narrative = NarrativeResult(
         trend_fit=5.0, virality=5.0, community_signals=5.0, launch_timing=5.0
@@ -80,8 +81,8 @@ def test_score_never_leaves_unit_interval(config):
 
 
 def test_missing_components_count_as_zero(config):
-    """Не отработавший агент — это ноль, а не пропуск компонента: иначе
-    сбой агента повышал бы итоговый скоринг."""
+    """An agent that did not run is a zero, not a skipped component: otherwise
+    an agent failure would raise the total score."""
     analysis = perfect_analysis()
     analysis.audit = None
     scores = compute_scores(analysis, config)
@@ -89,7 +90,7 @@ def test_missing_components_count_as_zero(config):
     assert scores.total == pytest.approx(0.70)
 
 
-# --- веса -----------------------------------------------------------------
+# --- weights --------------------------------------------------------------
 
 
 def test_weights_are_normalized():
@@ -115,7 +116,7 @@ def test_unnormalized_config_preserves_proportions(config):
     assert scores.total == pytest.approx(1.0)
 
 
-# --- компонентная арифметика ---------------------------------------------
+# --- component arithmetic -------------------------------------------------
 
 
 def test_audit_flags_penalize_score(config):
@@ -150,7 +151,7 @@ def test_metrics_component_mirrors_risk_score(config):
     assert scores.metrics == pytest.approx(0.3)
 
 
-# --- порог ----------------------------------------------------------------
+# --- threshold ------------------------------------------------------------
 
 
 def test_threshold_boundary_is_inclusive(config):
